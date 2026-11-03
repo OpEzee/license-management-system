@@ -3,6 +3,27 @@ import LicenseKey from './LicenseKey'
 import IconButton, { ACTION_ICONS } from './IconButton'
 import { formatDate } from '../services/format'
 
+const dash = <span className="text-slate-400 dark:text-slate-600">&mdash;</span>
+
+/*
+ * Digital Diya: the screen-app PCs running on the key, out of what its plan
+ * allows — "2 / 4", the plan underneath. Reported by Digital Diya on sync;
+ * a dash until it has. A full plan is shown in amber.
+ */
+function Screens({ screens }) {
+  if (!screens) return dash
+  const full = screens.limit !== null && screens.used >= screens.limit
+  return (
+    <span className="inline-flex flex-col leading-tight" title={screens.updatedAt ? `Reported ${formatDate(screens.updatedAt)}` : undefined}>
+      <span className={`font-semibold ${full ? 'text-amber-600 dark:text-amber-400' : 'text-slate-900 dark:text-white'}`}>
+        {screens.used}
+        {screens.limit !== null && <span className="font-normal text-slate-500 dark:text-slate-400"> / {screens.limit}</span>}
+      </span>
+      {screens.plan && <span className="text-xs text-slate-500 dark:text-slate-400">{screens.plan}</span>}
+    </span>
+  )
+}
+
 /*
  * `nowrap` marks the columns whose content must stay on one line — the key, the
  * dates, the status chip. Everything else is allowed to wrap so the table can
@@ -14,19 +35,6 @@ const COLUMNS = {
     nowrap: true,
     render: (l, ctx) => <LicenseKey value={l.licenseKey} onCopied={ctx.onCopied} showLabel={false} />,
   },
-  machineNumber: {
-    header: 'Machine No.',
-    nowrap: true,
-    // Empty until a machine first verifies the key and claims it.
-    render: (l) =>
-      l.machineNumber ? (
-        <span className="font-mono text-xs text-slate-700 dark:text-slate-200">
-          {l.machineNumber}
-        </span>
-      ) : (
-        <span className="text-slate-400 dark:text-slate-600">Not claimed</span>
-      ),
-  },
   clientName: {
     header: 'POC',
     render: (l) => <span className="font-medium text-slate-900 dark:text-white">{l.clientName}</span>,
@@ -36,9 +44,9 @@ const COLUMNS = {
   productName: { header: 'Product', render: (l) => l.productName },
   soldBy: {
     header: 'Sold By',
-    render: (l) =>
-      l.soldBy || <span className="text-slate-400 dark:text-slate-600">&mdash;</span>,
+    render: (l) => l.soldBy || dash,
   },
+  screens: { header: 'Screens', nowrap: true, render: (l) => <Screens screens={l.screens} /> },
   startDate: { header: 'Start Date', nowrap: true, render: (l) => formatDate(l.startDate) },
   expiryDate: { header: 'Expiry Date', nowrap: true, render: (l) => formatDate(l.expiryDate) },
   status: {
@@ -69,6 +77,7 @@ function Actions({ license, actions }) {
 
 export default function LicenseTable({ licenses, columns, actions, onCopied }) {
   const cols = columns.map((key) => ({ key, ...COLUMNS[key] }))
+  const has = (key) => columns.includes(key)
 
   return (
     <>
@@ -130,12 +139,6 @@ export default function LicenseTable({ licenses, columns, actions, onCopied }) {
             </div>
             <LicenseKey value={license.licenseKey} onCopied={onCopied} />
             <dl className="grid grid-cols-2 gap-y-2 text-sm">
-              <dt className="text-slate-500 dark:text-slate-400">Machine No.</dt>
-              <dd className="truncate text-right font-mono text-xs text-slate-800 dark:text-slate-200">
-                {license.machineNumber || (
-                  <span className="font-sans text-slate-400 dark:text-slate-600">Not claimed</span>
-                )}
-              </dd>
               <dt className="text-slate-500 dark:text-slate-400">Email</dt>
               <dd className="truncate text-right text-slate-800 dark:text-slate-200">
                 {license.clientUserId}
@@ -146,14 +149,30 @@ export default function LicenseTable({ licenses, columns, actions, onCopied }) {
               <dd className="truncate text-right text-slate-800 dark:text-slate-200">
                 {license.soldBy || '—'}
               </dd>
-              <dt className="text-slate-500 dark:text-slate-400">Start</dt>
-              <dd className="text-right text-slate-800 dark:text-slate-200">
-                {formatDate(license.startDate)}
-              </dd>
-              <dt className="text-slate-500 dark:text-slate-400">Expires</dt>
-              <dd className="text-right text-slate-800 dark:text-slate-200">
-                {formatDate(license.expiryDate)}
-              </dd>
+              {has('screens') && (
+                <>
+                  <dt className="text-slate-500 dark:text-slate-400">Screens</dt>
+                  <dd className="text-right text-slate-800 dark:text-slate-200">
+                    <Screens screens={license.screens} />
+                  </dd>
+                </>
+              )}
+              {has('startDate') && (
+                <>
+                  <dt className="text-slate-500 dark:text-slate-400">Start</dt>
+                  <dd className="text-right text-slate-800 dark:text-slate-200">
+                    {formatDate(license.startDate)}
+                  </dd>
+                </>
+              )}
+              {has('expiryDate') && (
+                <>
+                  <dt className="text-slate-500 dark:text-slate-400">Expires</dt>
+                  <dd className="text-right text-slate-800 dark:text-slate-200">
+                    {formatDate(license.expiryDate)}
+                  </dd>
+                </>
+              )}
             </dl>
             <div className="border-t border-slate-100 pt-2 dark:border-slate-800">
               <Actions license={license} actions={actions} />

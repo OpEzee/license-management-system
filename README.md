@@ -40,7 +40,7 @@ Your product never touches Firebase, and never needs an admin token. It only cal
   - [2. Re-check hourly (auto-sync)](#2-re-check-hourly-auto-sync)
   - [3. Check login credentials](#3-check-login-credentials)
   - [4. Hosted license screens](#4-hosted-license-screens)
-- [One machine per license](#one-machine-per-license)
+- [Any number of machines per license](#any-number-of-machines-per-license)
 - [Security](#security)
 - [Deploying to Render](#deploying-to-render)
 - [Tests](#tests)
@@ -106,8 +106,7 @@ npm start          # serves the API *and* dist/ on one port
 
 ## Running on your network (IP address)
 
-Useful for testing the [one-machine lock](#one-machine-per-license) — you need a
-second computer to hit the API as a different machine.
+Useful for trying a product against the API from a second computer.
 
 Both servers already listen on every network interface, so no flag is needed.
 
@@ -250,7 +249,6 @@ One file at the project root, read by the server and by `vite build`.
 | `ADMIN_EMAIL`           | no       | —                       | Used by `npm run create-admin`.                                 |
 | `ADMIN_PASSWORD`        | no       | —                       | Used by `npm run create-admin`. Minimum 8 characters.           |
 | `ADMIN_NAME`            | no       | `Administrator`         | Display name for the admin.                                     |
-| `LICENSE_KEY_PREFIX`    | no       | `OPEZ`                  | Four-character prefix for generated keys.                       |
 | `SMTP_HOST`             | no       | —                       | Mail server, e.g. `smtp.gmail.com`. Blank disables server-side email. |
 | `SMTP_PORT`             | no       | `587`                   | 587 for STARTTLS, 465 for implicit TLS.                         |
 | `SMTP_USER`             | no       | —                       | SMTP username, usually the sending address.                     |
@@ -609,7 +607,7 @@ computed from `startDate` and anything sent is ignored.
   "message": "License created successfully",
   "license": {
     "id": "8Kd0a1Xq…",
-    "licenseKey": "OPEZ-8F4K-92LM-X7PQ",
+    "licenseKey": "K7M2Q9",
     "clientName": "John Doe",
     "companyName": "ABC Pvt Ltd",
     "clientUserId": "john.doe",
@@ -709,7 +707,7 @@ limited to 30 failed attempts per 15 minutes per IP.
   },
   "licenses": [
     {
-      "licenseKey": "OPEZ-8F4K-92LM-X7PQ",
+      "licenseKey": "K7M2Q9",
       "productName": "My Product",
       "startDate": "2026-09-23T00:00:00.000Z",
       "expiryDate": "2027-09-23T23:59:59.999Z",
@@ -734,38 +732,16 @@ use `/api/licenses/sync` hourly to notice changes.
 
 ---
 
-### One machine per license
+### Any number of machines per license
 
-A license is locked to a single machine, so one key cannot be installed across
-several systems.
+A license key is not tied to a machine. Whoever holds the key can use it, on as
+many installations as they like — products send only the key and, optionally, the
+product name.
 
-Send a `machineNumber` with every `/verify` and `/sync` call — any string your
-product can derive **stably** for the machine it runs on, the same value on every
-launch. A hardware or install id works; anything that changes on reinstall or
-between sessions does not.
-
-```
-first verify with a machine number  ->  that machine claims the key
-same machine verifies again         ->  valid
-a different machine verifies        ->  403, "already in use on another machine"
-no machine number on a claimed key  ->  403
-```
-
-The claim happens **only when the license is otherwise usable**. An expired,
-deactivated or not-yet-started key is never claimed, so a machine cannot lock
-itself to a license it could not have run anyway.
-
-Comparison ignores case and surrounding whitespace. The dashboard shows the
-claimed machine in the **Machine No.** column and in the license's details
-popup, where it is read-only.
-
-A license created before this existed has no machine recorded. The next machine
-to verify it claims it, so nothing breaks — but until then that key still works
-from anywhere.
-
-> **Moving a client to a new machine.** There is no release action yet: once a
-> key is claimed, that claim stands. To move a client, delete the license and
-> issue a new key, or clear `machineNumber` on the document in Firestore.
+Keys used to be locked to the first machine that verified them. That lock is gone:
+a `machineNumber` (or `machine_number`) sent by a product built before the change
+is accepted and ignored, never stored, and a machine number recorded on an older
+license is no longer read or shown.
 
 ---
 
@@ -783,26 +759,24 @@ Request:
 
 ```json
 {
-  "licenseKey": "OPEZ-8F4K-92LM-X7PQ",
-  "productName": "My Product",
-  "machineNumber": "PC-ALPHA-01"
+  "licenseKey": "K7M2Q9",
+  "productName": "My Product"
 }
 ```
 
 `productName` is optional. When present, the license must have been issued for
 that exact product (compared case-insensitively).
 
-`machineNumber` identifies the machine your product is installed on — see
-[One machine per license](#one-machine-per-license). `machine_number` is
-accepted as a spelling of the same field. Up to 128 characters of
-`A-Z a-z 0-9 . _ : -`.
+Keys are normalized before lookup, so `k7m 2q9` and `K7M2Q9` both work.
 
-Keys are normalized before lookup, so `opez 8f4k 92lm x7pq` and
-`OPEZ-8F4K-92LM-X7PQ` both work.
+New keys are six characters — letters and numbers, at least one of each, from
+an alphabet without the easily confused `0 O 1 I L U` — and each is checked
+against every existing key before it is issued. Keys issued before this format
+(`OPEZ-8F4K-92LM-X7PQ`) keep working, and are normalized the same way
+(`opez 8f4k 92lm x7pq` finds them).
 
 The backend checks, in order: the key exists, it belongs to the requested
-product, the start date has been reached, the expiry date has not passed, and
-the machine matches the one that claimed the key.
+product, the start date has been reached, and the expiry date has not passed.
 
 #### Valid license — `200 OK`
 
@@ -812,11 +786,10 @@ the machine matches the one that claimed the key.
   "valid": true,
   "message": "License is valid",
   "license": {
-    "licenseKey": "OPEZ-8F4K-92LM-X7PQ",
+    "licenseKey": "K7M2Q9",
     "clientName": "John Doe",
     "companyName": "ABC Pvt Ltd",
     "productName": "My Product",
-    "machineNumber": "PC-ALPHA-01",
     "startDate": "2026-09-23T00:00:00.000Z",
     "expiryDate": "2027-09-23T23:59:59.999Z",
     "status": "active"
@@ -834,19 +807,6 @@ the machine matches the one that claimed the key.
 }
 ```
 
-#### Key already claimed by another machine — `403 Forbidden`
-
-```json
-{
-  "success": false,
-  "valid": false,
-  "message": "License is already in use on another machine"
-}
-```
-
-The machine that holds the key is deliberately **not** named in the response:
-echoing it back would hand out the one value needed to impersonate it.
-
 #### Expired license — `200 OK`
 
 ```json
@@ -855,7 +815,7 @@ echoing it back would hand out the one value needed to impersonate it.
   "valid": false,
   "message": "License has expired",
   "license": {
-    "licenseKey": "OPEZ-8F4K-92LM-X7PQ",
+    "licenseKey": "K7M2Q9",
     "productName": "My Product",
     "startDate": "2025-09-23T00:00:00.000Z",
     "expiryDate": "2026-09-23T23:59:59.999Z",
@@ -875,7 +835,7 @@ verify until it is reactivated:
   "valid": false,
   "message": "License has been deactivated",
   "license": {
-    "licenseKey": "OPEZ-8F4K-92LM-X7PQ",
+    "licenseKey": "K7M2Q9",
     "productName": "My Product",
     "startDate": "2026-09-23T00:00:00.000Z",
     "expiryDate": "2027-09-23T23:59:59.999Z",
@@ -894,7 +854,7 @@ A license whose start date is in the future is not usable yet:
   "valid": false,
   "message": "License has not started yet",
   "license": {
-    "licenseKey": "OPEZ-8F4K-92LM-X7PQ",
+    "licenseKey": "K7M2Q9",
     "productName": "My Product",
     "startDate": "2027-01-01T00:00:00.000Z",
     "expiryDate": "2027-04-01T23:59:59.999Z",
@@ -941,9 +901,8 @@ Request:
 
 ```json
 {
-  "licenseKey": "OPEZ-8F4K-92LM-X7PQ",
-  "productName": "My Product",
-  "machineNumber": "PC-ALPHA-01"
+  "licenseKey": "K7M2Q9",
+  "productName": "My Product"
 }
 ```
 
@@ -955,9 +914,8 @@ Request:
   "valid": true,
   "status": "active",
   "message": "License is valid",
-  "licenseKey": "OPEZ-8F4K-92LM-X7PQ",
+  "licenseKey": "K7M2Q9",
   "productName": "My Product",
-  "machineNumber": "PC-ALPHA-01",
   "startDate": "2026-09-23T00:00:00.000Z",
   "expiryDate": "2027-09-23T23:59:59.999Z",
   "checkedAt": "2026-09-23T10:00:00.000Z"
@@ -965,12 +923,165 @@ Request:
 ```
 
 `status` is `active`, `pending` or `expired`. An unknown key returns `404` and a
-product mismatch `403`, both with `"status": "invalid"` and a `checkedAt`. A
-request from a machine other than the one that claimed the key returns `403`
-with `"status": "machine_mismatch"`.
+product mismatch `403`, both with `"status": "invalid"` and a `checkedAt`.
 
 Every call re-reads Firestore, so revoking or extending a license in the dashboard
 takes effect on the client's next sync.
+
+### Digital Diya endpoints (public)
+
+Digital Diya has its own pair of endpoints: **validate** to check a key when it is
+entered, and **sync** to re-check it on a timer. Every other product keeps using
+`/verify` and `/sync` as described above.
+
+#### Validate a key
+
+```
+POST /api/licenses/digital-diya/validate
+```
+
+A yes/no check for **Digital Diya only**: is this key valid right now. Only the
+key is sent — the product is fixed on the server, so a key issued for any other
+product is refused, and sending a `productName` cannot change that.
+
+Request:
+
+```json
+{ "licenseKey": "9KCN3M" }
+```
+
+Read `valid`; everything else is detail. Every answer has the same flat shape.
+
+Valid — `200 OK`:
+
+```json
+{
+  "success": true,
+  "valid": true,
+  "status": "active",
+  "message": "License is valid",
+  "license": {
+    "licenseKey": "9KCN3M",
+    "productName": "Digital Diya",
+    "clientName": "Sajid",
+    "clientUserId": "sajid@example.com",
+    "companyName": "sajid pvt ltd",
+    "startDate": "2026-10-31T00:00:00.000Z",
+    "expiryDate": "2027-10-31T23:59:59.999Z"
+  }
+}
+```
+
+`clientName` is the license's POC and `clientUserId` their email: Digital Diya
+shows both on its status page (`/client/status?poc=…&email=…`).
+
+Not valid:
+
+| HTTP | `valid` | `status` | `message` |
+| ---- | ------- | -------- | --------- |
+| `200` | `false` | `expired` | License has expired |
+| `200` | `false` | `deactivated` | License has been deactivated |
+| `200` | `false` | `pending` | License has not started yet |
+| `403` | `false` | `invalid` | License is not valid for Digital Diya |
+| `404` | `false` | `invalid` | Invalid license key |
+| `400` | — | — | Missing or malformed `licenseKey` |
+| `429` | `false` | — | Too many checks from this address |
+
+The `200` refusals carry the same `license` block, so the product can show the
+dates. No admin token is needed, any origin may call it, and it shares the
+**20 requests per minute per IP** limit of `/verify` and `/sync`.
+
+#### Auto-sync
+
+```
+POST /api/licenses/digital-diya/sync
+```
+
+The same check, for Digital Diya to call on a timer so it notices when its key
+expires or is switched off in the dashboard — and when it is switched back on.
+**Digital Diya owns the interval**; nothing is scheduled on the server. Same
+request:
+
+```json
+{ "licenseKey": "9KCN3M" }
+```
+
+A flat answer, always with `checkedAt`:
+
+```json
+{
+  "success": true,
+  "valid": true,
+  "status": "active",
+  "message": "License is valid",
+  "licenseKey": "9KCN3M",
+  "productName": "Digital Diya",
+  "startDate": "2026-10-31T00:00:00.000Z",
+  "expiryDate": "2027-10-31T23:59:59.999Z",
+  "license": { "clientName": "Sajid", "clientUserId": "sajid@example.com" },
+  "checkedAt": "2026-10-31T10:00:00.000Z"
+}
+```
+
+`license` names the POC and their email, as validate does, so a POC renamed (or
+given another email) in the dashboard reaches the product's status page at the
+next sync.
+
+`valid` and `status` mean exactly what they do for validate: `200` with
+`valid: false` and `expired`, `deactivated` or `pending`; `403` (another product)
+or `404` (unknown key) with `status: "invalid"` and a `checkedAt`.
+
+How Digital Diya should read it:
+
+- `valid: true` → keep running.
+- `valid: false` (any HTTP status) → stop, and show why from `status`.
+- No answer at all (offline, timed out) → change nothing and try again on the
+  next tick. A dead network should not lock a working installation.
+
+Validate and sync share the **20 requests per minute per IP** limit with
+`/verify` and `/sync`, so keep the interval at 10 seconds or longer — every
+minute or every hour is plenty for most installations.
+
+#### Screens (Digital Diya screen app 1.4.13 and later)
+
+The sync may also say how many screen-app PCs run on the key and how many its
+Digital Diya plan allows:
+
+```json
+{ "licenseKey": "9KCN3M", "screens": { "used": 2, "limit": 4, "plan": "Standard" } }
+```
+
+`used` is a whole number from 0; `limit` is a whole number from 1, or `null` when
+the plan sets no limit; `plan` is the plan's name (up to 40 characters) or
+`null`. Anything else is a `400`. The license keeps the last report, writing it
+only when it changes, and the answer echoes it as `screens` (with `updatedAt`).
+A sync without `screens` leaves the stored report as it is; before the first one
+`screens` is `null`.
+
+On the **Licenses** page the product dropdown chooses **Other** (every product
+but Digital Diya, the default) or **Digital Diya**. The Digital Diya table drops
+Start Date and Expiry Date and adds **Screens**: "2 / 4" with the plan under it,
+in amber once the plan is full, or a dash until the key has reported.
+
+### Licence details behind a staff PIN (public)
+
+```
+POST /api/licenses/details
+{ "licenseKey": "W7923K", "productName": "Digital Diya", "pin": "1968" }
+```
+
+The PIN is the server's `CLIENT_PIN` (4 to 8 digits, in `.env`). The right
+PIN returns the whole record, whatever its status: `licenseKey`, `clientName`
+(POC), `clientUserId` (email), `companyName`, `productName`, `startDate`,
+`expiryDate`, `status`. A wrong PIN is `401 WRONG_PIN`; an unknown key `404`;
+a key for another product `403`; no `CLIENT_PIN` on the server `503`. Wrong
+PINs are capped at **10 per 15 minutes per IP**.
+
+The hosted page `/client/pin?product=&key=&theme=` asks for it — four boxes
+that submit on the fourth digit — and on the right PIN shows
+`/client/details` with that record. Back, Esc, or the details page's ✕ tell
+the product `close`. Digital Diya opens it when staff double-click the logo on
+its server-address page.
 
 ### Example requests
 
@@ -989,12 +1100,22 @@ curl -X POST http://localhost:5000/api/licenses \
 # Verify (public — this is what your product calls)
 curl -X POST http://localhost:5000/api/licenses/verify \
   -H "Content-Type: application/json" \
-  -d '{"licenseKey":"OPEZ-8F4K-92LM-X7PQ","productName":"My Product"}'
+  -d '{"licenseKey":"K7M2Q9","productName":"My Product"}'
 
 # Hourly sync (public)
 curl -X POST http://localhost:5000/api/licenses/sync \
   -H "Content-Type: application/json" \
-  -d '{"licenseKey":"OPEZ-8F4K-92LM-X7PQ","productName":"My Product"}'
+  -d '{"licenseKey":"K7M2Q9","productName":"My Product"}'
+
+# Digital Diya: is this key valid? (public)
+curl -X POST http://localhost:5000/api/licenses/digital-diya/validate \
+  -H "Content-Type: application/json" \
+  -d '{"licenseKey":"9KCN3M"}'
+
+# Digital Diya: auto-sync, called on a timer (public)
+curl -X POST http://localhost:5000/api/licenses/digital-diya/sync \
+  -H "Content-Type: application/json" \
+  -d '{"licenseKey":"9KCN3M"}'
 ```
 
 ---
@@ -1015,26 +1136,24 @@ other, so it can never blank a field it did not mean to touch.
 
 #### Authentication
 
-There is no admin token. The caller proves it is the holder with the same pair
-`/verify` uses — **the license key and the machine that claimed it**:
+There is no admin token. The caller proves it is the holder the way `/verify`
+does — **by sending the license key**:
 
 ```json
 {
-  "licenseKey": "OPEZ-8F4K-92LM-X7PQ",
-  "machineNumber": "PC-ALPHA-01",
+  "licenseKey": "K7M2Q9",
   "pocName": "Sajid Parwez"
 }
 ```
 
 ```json
 {
-  "licenseKey": "OPEZ-8F4K-92LM-X7PQ",
-  "machineNumber": "PC-ALPHA-01",
+  "licenseKey": "K7M2Q9",
   "email": "sajid@example.com"
 }
 ```
 
-`machine_number` and `poc_name` are accepted as spellings of the same fields.
+`poc_name` is accepted as a spelling of `pocName`.
 `productName` is optional and checked when present.
 
 #### Response — `200 OK`
@@ -1044,11 +1163,10 @@ There is no admin token. The caller proves it is the holder with the same pair
   "success": true,
   "message": "POC name updated",
   "license": {
-    "licenseKey": "OPEZ-8F4K-92LM-X7PQ",
+    "licenseKey": "K7M2Q9",
     "pocName": "Sajid Parwez",
     "email": "sajid@example.com",
-    "productName": "My Product",
-    "machineNumber": "PC-ALPHA-01"
+    "productName": "My Product"
   }
 }
 ```
@@ -1058,8 +1176,6 @@ There is no admin token. The caller proves it is the holder with the same pair
 | Status | `code` | When |
 | ------ | ------ | ---- |
 | `404` | `LICENSE_NOT_FOUND` | No such key |
-| `403` | `LICENSE_NOT_CLAIMED` | The key has never been activated, so there is no machine to prove ownership |
-| `403` | `MACHINE_MISMATCH` | The request came from a different machine |
 | `403` | `LICENSE_NOT_ACTIVE` | Expired, deactivated or not started yet |
 | `403` | `PRODUCT_MISMATCH` | `productName` was sent and does not match |
 | `409` | `EMAIL_TAKEN` | Another client account already signs in with that email |
@@ -1074,9 +1190,9 @@ license belongs to one — so the Clients page and the product login stay in ste
 with the Licenses page rather than drifting apart. Changing the email therefore
 changes what that client signs in with.
 
-> These endpoints can only ever touch the single license whose key *and* machine
-> both match, and only while it is active. Anyone able to call them already has
-> the key and is running on the claimed machine.
+> These endpoints can only ever touch the single license whose key was sent, and
+> only while it is active. Anyone holding the key can change its POC name and
+> email, so treat the key like a password.
 
 ---
 
@@ -1106,7 +1222,7 @@ POST /api/licenses/verify
 ```
 
 ```json
-{ "licenseKey": "OPEZ-WV5R-K9AE-622V", "productName": "Invoice Pro" }
+{ "licenseKey": "WV5R9A", "productName": "Invoice Pro" }
 ```
 
 `productName` is optional but recommended — it stops a key issued for one
@@ -1121,7 +1237,7 @@ Valid — `200`:
   "valid": true,
   "message": "License is valid",
   "license": {
-    "licenseKey": "OPEZ-WV5R-K9AE-622V",
+    "licenseKey": "WV5R9A",
     "clientName": "Priya Sharma",
     "companyName": "Nimbus Retail Group",
     "productName": "Invoice Pro",
@@ -1166,7 +1282,7 @@ polling:
   "valid": true,
   "status": "active",
   "message": "License is valid",
-  "licenseKey": "OPEZ-WV5R-K9AE-622V",
+  "licenseKey": "WV5R9A",
   "productName": "Invoice Pro",
   "startDate": "2026-09-23T00:00:00.000Z",
   "expiryDate": "2028-03-31T23:59:59.999Z",
@@ -1216,7 +1332,7 @@ Correct credentials — `200`:
   },
   "licenses": [
     {
-      "licenseKey": "OPEZ-WV5R-K9AE-622V",
+      "licenseKey": "WV5R9A",
       "productName": "Invoice Pro",
       "startDate": "2026-09-23T00:00:00.000Z",
       "expiryDate": "2028-03-31T23:59:59.999Z",
@@ -1306,14 +1422,15 @@ and calls the endpoints above itself:
 | Page | Calls | For |
 |---|---|---|
 | `/client/login` | `POST /api/clients/login` | The POC signs in |
-| `/client/activate` | `POST /api/licenses/verify` | Enter the key; binds it to the machine |
+| `/client/activate` | `POST /api/licenses/verify` | Enter the key |
 | `/client/status` | `POST /api/licenses/sync` | Expired / deactivated notice, with Reactivate and Check again |
 | `/client/details` | `POST /api/licenses/verify` | The license record, read-only |
 
-The product describes itself in the query string — `product`, `machine`, and later
+The product describes itself in the query string — `product`, and later
 `key`, `email`, `poc`, `company`; `theme=dark|light` matches its look without
-touching the console's saved theme. In development they are on the Vite port, e.g.
-`http://192.168.68.106:5173/client/login?product=Match%20Match&machine=1234`.
+touching the console's saved theme. On `/client/status`, `signout=0` hides Sign out, for a product with no sign-in of
+its own (Digital Diya: Reactivate License is the only way on). In development they are on the Vite port, e.g.
+`http://192.168.68.106:5173/client/login?product=Match%20Match`.
 
 In a frame, each page reports to the product with `postMessage`
 (`{ source: 'opezee-licence', type, ... }`): `ready`, `login` (who signed in — never
@@ -1446,7 +1563,7 @@ policy, logo upload validation, email share validation, rate limiting and error 
 
 | Field          | Type               | Notes                                     |
 | -------------- | ------------------ | ----------------------------------------- |
-| `licenseKey`   | string             | `OPEZ-8F4K-92LM-X7PQ`, unique, immutable   |
+| `licenseKey`   | string             | `K7M2Q9` (older keys: `OPEZ-8F4K-92LM-X7PQ`), unique, immutable |
 | `clientName`   | string             | Fallback only — the client account wins when one exists |
 | `companyName`  | string             | Fallback only — the client account wins when one exists |
 | `clientUserId` | string             | The client account's username; links the two   |

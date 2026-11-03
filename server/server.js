@@ -38,6 +38,12 @@ app.set('trust proxy', 1);
 // The dashboard is served from this same server in production, so the default
 // policy is relaxed exactly where that build needs it: the inline theme script
 // in index.html, Google Fonts, and logos stored as data URLs.
+// ALLOW_HTTP=true: this server is reached over plain http:// (e.g. an EC2 test
+// without a domain). Then upgrade-insecure-requests must go — it makes the
+// browser fetch the dashboard's own scripts over https://, which nothing
+// answers, and the page stays blank. Served over https, it stays on.
+const allowHttp = process.env.ALLOW_HTTP === 'true';
+
 const cspDirectives = {
   defaultSrc: ["'self'"],
   scriptSrc: ["'self'", "'unsafe-inline'"],
@@ -46,6 +52,7 @@ const cspDirectives = {
   imgSrc: ["'self'", 'data:', 'blob:'],
   connectSrc: ["'self'"],
   objectSrc: ["'none'"],
+  ...(allowHttp ? { upgradeInsecureRequests: null } : {}),
 };
 
 const strictHeaders = helmet({
@@ -123,6 +130,9 @@ const allowedOrigins = [...new Set([...configuredOrigins, ...developmentLanOrigi
 const PUBLIC_PATHS = [
   '/licenses/verify',
   '/licenses/sync',
+  '/licenses/details',
+  '/licenses/digital-diya/validate',
+  '/licenses/digital-diya/sync',
   '/licenses/poc',
   '/licenses/email',
   '/clients/login',
@@ -228,7 +238,7 @@ function start() {
     lanAddresses().forEach((ip) => console.log(`                    http://${ip}:${PORT}`));
     console.log(`Allowed admin origins: ${allowedOrigins.join(', ')}`);
     console.log(
-      'Public endpoints: POST /api/licenses/verify, POST /api/licenses/sync, POST /api/clients/login'
+      'Public endpoints: POST /api/licenses/verify, POST /api/licenses/sync, POST /api/clients/login, POST /api/licenses/digital-diya/validate, POST /api/licenses/digital-diya/sync'
     );
   });
 }

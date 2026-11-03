@@ -15,7 +15,6 @@ function collection() {
 }
 
 const normalizeUserId = (value) => String(value || '').trim().toLowerCase();
-const normalizeMachine = (value) => String(value || '').trim().toLowerCase();
 
 /**
  * username -> { clientName, companyName } for every client account.
@@ -97,16 +96,30 @@ function toPublicLicense(doc, directory) {
     updatedAt: toIso(data.updatedAt),
     startDate: toIso(startDate),
     expiryDate: toIso(data.expiryDate),
-    // The machine this license is locked to. Empty until a product first
-    // verifies with one, which claims it.
-    machineNumber: data.machineNumber || '',
     deactivated,
     status: computeStatus(startDate, data.expiryDate, deactivated),
+    // Digital Diya only: how many screen-app PCs run on this key, as its
+    // server last reported on sync. Null until it has.
+    screens: toScreens(data.screens),
   };
 }
 
-/** Generates a key and confirms it is unused before handing it back. */
-async function generateUniqueLicenseKey(attempts = 6) {
+function toScreens(value) {
+  if (!value || !Number.isInteger(value.used)) return null;
+  return {
+    used: value.used,
+    limit: Number.isInteger(value.limit) ? value.limit : null,
+    plan: value.plan || null,
+    updatedAt: toIso(value.updatedAt),
+  };
+}
+
+/**
+ * Generates a key and confirms no license already has it before handing it
+ * back. Six characters give about 600 million keys, so a clash is rare; a few
+ * retries cover it.
+ */
+async function generateUniqueLicenseKey(attempts = 10) {
   for (let i = 0; i < attempts; i += 1) {
     const key = generateLicenseKey();
     const existing = await collection().where('licenseKey', '==', key).limit(1).get();
@@ -167,8 +180,6 @@ async function createLicense(payload) {
     productName: payload.productName,
     soldBy: payload.soldBy,
     duration: period.duration,
-    // Claimed by the first machine that verifies this key.
-    machineNumber: '',
     createdAt: Timestamp.now(),
     updatedAt: Timestamp.now(),
     startDate: startTs,
@@ -318,13 +329,10 @@ async function deleteLicense(id) {
  * rather than throwing, because each outcome maps to a specific response body.
  */
 /**
- * Shared lookup behind both /verify and /sync.
- *
- * A license is tied to one machine. The first machine to verify a key claims
- * it, and from then on only that machine can use it — which is what stops one
- * key being installed on several systems.
+ * Shared lookup behind both /verify and /sync. A key is not tied to any one
+ * machine: whoever holds it can use it, on as many installations as they like.
  */
-async function checkLicense({ licenseKey, productName, machineNumber }) {
+async function checkLicense({ licenseKey, productName }) {
   const key = normalizeLicenseKey(licenseKey);
   const snap = await collection().where('licenseKey', '==', key).limit(1).get();
 
@@ -346,36 +354,40 @@ async function checkLicense({ licenseKey, productName, machineNumber }) {
   if (license.status === 'expired') return { outcome: 'expired', license };
   if (license.status === 'pending') return { outcome: 'pending', license };
 
-  const claimed = normalizeMachine(license.machineNumber);
-  const asking = normalizeMachine(machineNumber);
-
-  if (claimed) {
-    // Refusing a request that names no machine matters as much as refusing a
-    // wrong one: otherwise the lock is bypassed by simply omitting the field.
-    if (!asking || asking !== claimed) return { outcome: 'machine_mismatch', license };
-  } else if (asking) {
-    // First use on this key: the machine claims it.
-    await doc.ref.update({ machineNumber: String(machineNumber).trim(), updatedAt: Timestamp.now() });
-    license.machineNumber = String(machineNumber).trim();
-  }
-
   return { outcome: 'valid', license };
 }
 
 
 /**
+ * Digital Diya's sync carries how many screen-app PCs use the key on its
+ * server and how many its plan allows: { used, limit, plan }. Stored on the
+ * license for the Licenses page ("2 / 4 · Standard"), and only written when it
+ * changes, not on every sync.
+ */
+async function recordScreens(license, screens) {
+  const next = { used: screens.used, limit: screens.limit ?? null, plan: screens.plan || null };
+  const prev = license.screens;
+  if (prev && prev.used === next.used && prev.limit === next.limit && prev.plan === next.plan) {
+    return license;
+  }
+  const updatedAt = Timestamp.now();
+  await collection().doc(license.id).update({ screens: { ...next, updatedAt } });
+  return { ...license, screens: { ...next, updatedAt: toIso(updatedAt) } };
+}
+
+/**
  * Self-service updates made by the product itself, not by an admin.
  *
- * The caller proves it is entitled with the same pair /verify uses: the license
- * key plus the machine that claimed it. There is no token — the product holds
- * no admin credentials — so these endpoints can only ever touch the one license
- * whose key and machine both match, and only while that license is usable.
+ * The caller proves it is entitled the way /verify does: by holding the
+ * license key. There is no token — the product holds no admin credentials — so
+ * these endpoints can only ever touch the one license whose key was sent, and
+ * only while that license is usable.
  *
  * Whatever the product changes is also written to the linked client account
  * when there is one, so the Clients page and the product login stay in step
  * with the Licenses page rather than drifting apart.
  */
-async function updateLicenseContact({ licenseKey, machineNumber, productName, clientName, clientUserId }) {
+async function updateLicenseContact({ licenseKey, productName, clientName, clientUserId }) {
   const key = normalizeLicenseKey(licenseKey);
   const snap = await collection().where('licenseKey', '==', key).limit(1).get();
   if (snap.empty) throw new ApiError(404, 'Invalid license key', 'LICENSE_NOT_FOUND');
@@ -394,20 +406,6 @@ async function updateLicenseContact({ licenseKey, machineNumber, productName, cl
   // switched-off installation has no business rewriting its own record.
   if (current.status !== 'active') {
     throw new ApiError(403, `License is ${current.status}`, 'LICENSE_NOT_ACTIVE');
-  }
-
-  // The machine lock is the authentication here, so it is required — an
-  // unclaimed license has nobody to prove they are the holder.
-  const claimed = normalizeMachine(current.machineNumber);
-  if (!claimed) {
-    throw new ApiError(
-      403,
-      'This license has not been activated on a machine yet',
-      'LICENSE_NOT_CLAIMED'
-    );
-  }
-  if (normalizeMachine(machineNumber) !== claimed) {
-    throw new ApiError(403, 'License is already in use on another machine', 'MACHINE_MISMATCH');
   }
 
   const updates = { updatedAt: Timestamp.now() };
@@ -545,6 +543,7 @@ module.exports = {
   adoptUnlinkedLicenses,
   relinkClientLicenses,
   checkLicense,
+  recordScreens,
   updateLicenseContact,
   getStats,
   listClients,

@@ -5,8 +5,16 @@ const crypto = require('crypto');
 // Crockford-style alphabet: no I, L, O, U, 0, 1 — avoids transcription mistakes
 // when a client reads a key off an invoice or an email.
 const ALPHABET = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
-const GROUP_SIZE = 4;
-const GROUPS = 3; // plus the fixed prefix group => PREFIX-XXXX-XXXX-XXXX
+
+// Keys are six characters, e.g. "K7M2Q9": short enough to read out over the
+// phone or type on a kiosk keyboard. Every key mixes letters and numbers, so
+// it never reads as a word or a PIN.
+const KEY_LENGTH = 6;
+
+// Keys issued before the six-character format: "OPEZ-8F4K-92LM-X7PQ". They are
+// never reissued, but every one already handed out keeps working.
+const LEGACY_GROUP_SIZE = 4;
+const LEGACY_LENGTH = 16;
 
 /**
  * Cryptographically secure random string from ALPHABET.
@@ -24,34 +32,36 @@ function randomSegment(length) {
   return out;
 }
 
-function normalizePrefix(prefix) {
-  const cleaned = String(prefix || 'OPEZ')
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, '')
-    .slice(0, GROUP_SIZE);
-  return cleaned.length === GROUP_SIZE ? cleaned : cleaned.padEnd(GROUP_SIZE, 'X');
+/**
+ * A fresh six-character key with at least one letter and one number. Whether
+ * it is already taken is the caller's question — see generateUniqueLicenseKey
+ * in licenseService, which checks the database before using it.
+ *
+ * @returns {string} e.g. "K7M2Q9"
+ */
+function generateLicenseKey() {
+  for (;;) {
+    const key = randomSegment(KEY_LENGTH);
+    if (/[A-Z]/.test(key) && /[0-9]/.test(key)) return key;
+  }
 }
 
 /**
- * @returns {string} e.g. "OPEZ-8F4K-92LM-X7PQ"
+ * Normalizes user input into the stored form: " k7m 2q9 " → "K7M2Q9", and for
+ * a legacy key "opez 8f4k92lmx7pq" → "OPEZ-8F4K-92LM-X7PQ".
  */
-function generateLicenseKey(prefix = process.env.LICENSE_KEY_PREFIX) {
-  const parts = [normalizePrefix(prefix)];
-  for (let i = 0; i < GROUPS; i += 1) parts.push(randomSegment(GROUP_SIZE));
-  return parts.join('-');
-}
-
-/** Normalizes user input ("opez 8f4k92lmx7pq") into the canonical key format. */
 function normalizeLicenseKey(raw) {
   const compact = String(raw || '')
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, '');
-  if (compact.length !== GROUP_SIZE * (GROUPS + 1)) return String(raw || '').trim().toUpperCase();
-  return compact.match(/.{1,4}/g).join('-');
+  if (compact.length === KEY_LENGTH) return compact;
+  if (compact.length === LEGACY_LENGTH) {
+    return compact.match(new RegExp(`.{1,${LEGACY_GROUP_SIZE}}`, 'g')).join('-');
+  }
+  return String(raw || '').trim().toUpperCase();
 }
 
-const LICENSE_KEY_PATTERN = new RegExp(
-  `^[A-Z0-9]{${GROUP_SIZE}}(-[A-Z0-9]{${GROUP_SIZE}}){${GROUPS}}$`
-);
+/** A stored key in either format. */
+const LICENSE_KEY_PATTERN = /^(?:[A-Z0-9]{6}|[A-Z0-9]{4}(?:-[A-Z0-9]{4}){3})$/;
 
-module.exports = { generateLicenseKey, normalizeLicenseKey, LICENSE_KEY_PATTERN };
+module.exports = { generateLicenseKey, normalizeLicenseKey, LICENSE_KEY_PATTERN, KEY_LENGTH };

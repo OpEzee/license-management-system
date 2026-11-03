@@ -123,6 +123,8 @@ export const productClientApi = {
   login: (payload) => publicClient.post('/clients/login', payload).then((r) => r.data),
   verify: (payload) => publicClient.post('/licenses/verify', payload).then((r) => r.data),
   sync: (payload) => publicClient.post('/licenses/sync', payload).then((r) => r.data),
+  // The licence details behind the staff PIN (/client/pin).
+  details: (payload) => publicClient.post('/licenses/details', payload).then((r) => r.data),
 }
 
 export const brandingApi = {

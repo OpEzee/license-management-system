@@ -12,6 +12,7 @@ import ClientLogin from './pages/client/ClientLogin'
 import ClientActivate from './pages/client/ClientActivate'
 import ClientStatus from './pages/client/ClientStatus'
 import ClientDetails from './pages/client/ClientDetails'
+import ClientPin from './pages/client/ClientPin'
 
 export default function App() {
   return (
@@ -26,6 +27,7 @@ export default function App() {
         <Route path="activate" element={<ClientActivate />} />
         <Route path="status" element={<ClientStatus />} />
         <Route path="details" element={<ClientDetails />} />
+        <Route path="pin" element={<ClientPin />} />
         <Route path="*" element={<Navigate to="/client/login" replace />} />
       </Route>
 

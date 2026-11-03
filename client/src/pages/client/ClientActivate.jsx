@@ -15,19 +15,17 @@ import {
 import { productClientApi } from '../../services/api'
 import {
   KEY_PATTERN,
-  MACHINE_PATTERN,
   formatKeyInput,
-  isEmbedded,
   linkTo,
+  normalizeKey,
   notifyProduct,
   readParams,
 } from '../../services/productLink'
 
 /**
  * Signed in, not yet licensed: the operator types the key, and it is checked
- * with POST /api/licenses/verify together with this machine's number. The
- * first machine to verify a key claims it, so the same key on another machine
- * is refused from then on.
+ * with POST /api/licenses/verify. A key is not tied to a machine, so the same
+ * key works on every installation it is entered on.
  *
  * A key the server knows but will not honour (expired, deactivated, pending)
  * is still handed to the product, so its next screen can say exactly why.
@@ -47,23 +45,14 @@ export default function ClientActivate() {
   const [submitting, setSubmitting] = useState(false)
   const [handedOff, setHandedOff] = useState('')
 
-  // A product that frames this page must say which machine it is; without it
-  // a key would verify without being bound, and the lock would mean nothing.
-  const machineProblem =
-    isEmbedded() && !params.machine
-      ? 'This product did not send its machine number. Contact support.'
-      : params.machine && !MACHINE_PATTERN.test(params.machine)
-        ? 'This product sent a machine number the server cannot accept. Contact support.'
-        : ''
-
   const handleSubmit = async (e) => {
     e.preventDefault()
-    if (submitting || handedOff || machineProblem) return
+    if (submitting || handedOff) return
 
-    const licenseKey = key.trim().toUpperCase()
+    const licenseKey = normalizeKey(key)
     if (!licenseKey) return setFieldError('License key is required')
     if (!KEY_PATTERN.test(licenseKey)) {
-      return setFieldError('Enter the full key, e.g. OPEZ-XXXX-XXXX-XXXX')
+      return setFieldError('Enter the 6-character key, e.g. K7M2Q9')
     }
 
     setSubmitting(true)
@@ -72,7 +61,6 @@ export default function ClientActivate() {
       const data = await productClientApi.verify({
         licenseKey,
         productName: params.product || undefined,
-        machineNumber: params.machine || undefined,
       })
       const status = data.valid ? 'active' : data.license?.status || 'deactivated'
 
@@ -96,7 +84,7 @@ export default function ClientActivate() {
 
   const signOut = () => {
     if (!notifyProduct('signOut')) {
-      navigate(linkTo('/client/login', { product: params.product, machine: params.machine, theme: params.theme }))
+      navigate(linkTo('/client/login', { product: params.product, theme: params.theme }))
     }
   }
 
@@ -112,7 +100,7 @@ export default function ClientActivate() {
             autoComplete="off"
             spellCheck="false"
             autoFocus
-            placeholder="OPEZ-XXXX-XXXX-XXXX"
+            placeholder="XXXXXX"
             value={key}
             onChange={(e) => {
               setKey(formatKeyInput(e.target.value, key))
@@ -124,12 +112,12 @@ export default function ClientActivate() {
           />
         </Field>
 
-        <FormMessage>{machineProblem || formError}</FormMessage>
+        <FormMessage>{formError}</FormMessage>
 
         {handedOff ? (
           <Handoff>{handedOff}</Handoff>
         ) : (
-          <button type="submit" disabled={submitting || Boolean(machineProblem)} className={BUTTON_CLASS}>
+          <button type="submit" disabled={submitting} className={BUTTON_CLASS}>
             {submitting ? 'Checking...' : 'Activate'}
           </button>
         )}

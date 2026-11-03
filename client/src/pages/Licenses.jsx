@@ -8,14 +8,13 @@ import Modal from '../components/Modal'
 import LicenseKey from '../components/LicenseKey'
 import { EmptyState, ErrorState, TableSkeleton } from '../components/States'
 import { useToast } from '../components/Toast'
-import useLicenses, { filterLicenses, useClients, useProducts } from '../hooks/useLicenses'
+import useLicenses, { filterByProduct, filterLicenses, useClients, useProducts } from '../hooks/useLicenses'
 import { licenseApi } from '../services/api'
 import { formatDate } from '../services/format'
 
 const COLUMNS = [
   'clientName',
   'licenseKey',
-  'machineNumber',
   'companyName',
   'clientUserId',
   'productName',
@@ -23,6 +22,24 @@ const COLUMNS = [
   'startDate',
   'expiryDate',
   'status',
+]
+
+// Digital Diya's own view: no dates, and the screens each key runs on instead
+// (out of what its Digital Diya plan allows, as reported on sync).
+const DIGITAL_DIYA_COLUMNS = [
+  'clientName',
+  'licenseKey',
+  'companyName',
+  'clientUserId',
+  'productName',
+  'soldBy',
+  'screens',
+  'status',
+]
+
+const PRODUCT_FILTERS = [
+  { value: 'other', label: 'Other' },
+  { value: 'digital-diya', label: 'Digital Diya' },
 ]
 
 export default function Licenses() {
@@ -35,6 +52,7 @@ export default function Licenses() {
 
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('all')
+  const [product, setProduct] = useState('other')
   const [formOpen, setFormOpen] = useState(false)
   // `editing` drives both the View popup and Create — a null value means create.
   const [editing, setEditing] = useState(null)
@@ -42,7 +60,11 @@ export default function Licenses() {
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [created, setCreated] = useState(null)
 
-  const visible = useMemo(() => filterLicenses(licenses, search, status), [licenses, search, status])
+  const visible = useMemo(
+    () => filterLicenses(filterByProduct(licenses, product), search, status),
+    [licenses, product, search, status]
+  )
+  const digitalDiya = product === 'digital-diya'
   const copied = () => toast.success('License key copied to clipboard')
 
   const openCreate = () => {
@@ -115,14 +137,18 @@ export default function Licenses() {
       return (
         <EmptyState
           title="No matching licenses"
-          description="Try a different search term or clear the status filter."
+          description={
+            digitalDiya
+              ? 'No Digital Diya licenses match. Try a different search term or clear the status filter.'
+              : 'Try a different search term, clear the status filter or choose another product.'
+          }
         />
       )
     }
     return (
       <LicenseTable
         licenses={visible}
-        columns={COLUMNS}
+        columns={digitalDiya ? DIGITAL_DIYA_COLUMNS : COLUMNS}
         onCopied={copied}
         actions={{ onView: openView, onDelete: setDeleting }}
       />
@@ -153,7 +179,20 @@ export default function Licenses() {
           status={status}
           onStatus={setStatus}
           placeholder="Search by POC, company, email or key"
-        />
+        >
+          <select
+            className="input w-full sm:w-44"
+            aria-label="Product"
+            value={product}
+            onChange={(e) => setProduct(e.target.value)}
+          >
+            {PRODUCT_FILTERS.map((p) => (
+              <option key={p.value} value={p.value}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </TableToolbar>
         {renderBody()}
       </div>
 

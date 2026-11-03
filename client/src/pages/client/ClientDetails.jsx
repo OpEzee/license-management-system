@@ -16,9 +16,8 @@ const PILL = {
 
 /**
  * The license record as the server holds it now, for the staff page a product
- * keeps behind its PIN. Read with POST /api/licenses/verify, which for the
- * machine that owns the key also returns the POC and company. Nothing here is
- * editable.
+ * keeps behind its PIN. Read with POST /api/licenses/verify, which for a
+ * usable key also returns the POC and company. Nothing here is editable.
  *
  * Drawn as products draw their own licence page — a title bar, the record in
  * two columns, a round close button and a "Powered by" foot — rather than as a
@@ -30,7 +29,9 @@ export default function ClientDetails() {
   const navigate = useNavigate()
   const params = readParams(location.search)
 
-  const [license, setLicense] = useState(null)
+  // Opened from the PIN page: the record it fetched, as it is (no second look-up).
+  const handed = location.state?.license || null
+  const [license, setLicense] = useState(handed)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -45,7 +46,6 @@ export default function ClientDetails() {
       const data = await productClientApi.verify({
         licenseKey: params.key,
         productName: params.product || undefined,
-        machineNumber: params.machine || undefined,
       })
       setLicense({ ...data.license, status: data.valid ? 'active' : data.license?.status })
     } catch (err) {
@@ -54,11 +54,11 @@ export default function ClientDetails() {
     } finally {
       setLoading(false)
     }
-  }, [params.key, params.product, params.machine])
+  }, [params.key, params.product])
 
   useEffect(() => {
-    load()
-  }, [load])
+    if (!handed) load()
+  }, [load, handed])
 
   const close = () => {
     if (!notifyProduct('close')) navigate(-1)
@@ -69,7 +69,7 @@ export default function ClientDetails() {
 
   const contact = [
     ['POC', license?.clientName || params.poc],
-    ['Email', params.email],
+    ['Email', license?.clientUserId || params.email],
     ['Company', license?.companyName || params.company],
   ]
   const record = [
@@ -81,12 +81,15 @@ export default function ClientDetails() {
 
   return (
     <div className="flex min-h-screen flex-col bg-white text-slate-900 dark:bg-[#0c1220] dark:text-white">
-      <header className="border-b border-slate-200 px-12 pb-[22px] pt-[35px] dark:border-white/10">
-        <h1 className="text-[21px] font-bold leading-none">Licence Details</h1>
+      <header className="border-b border-slate-200 pb-[22px] pt-[35px] dark:border-white/10">
+        <h1 className="mx-auto max-w-[520px] px-4 text-[21px] font-bold leading-none min-[480px]:px-12">
+          Licence Details
+        </h1>
       </header>
 
-      <main className="flex flex-1 flex-col items-center justify-center px-12">
-        <dl className="grid w-full grid-cols-[132px_1fr] items-center gap-x-[9px] gap-y-[19px] px-12 py-[31px]">
+      {/* One 520px column, as in the product's frame, centred on wider screens. */}
+      <main className="mx-auto flex w-full max-w-[520px] flex-1 flex-col items-center justify-center px-4 min-[480px]:px-12">
+        <dl className="grid w-full grid-cols-[108px_1fr] items-center gap-x-[9px] gap-y-[19px] py-[31px] min-[480px]:grid-cols-[132px_1fr] min-[480px]:px-12">
           {contact.map(([label, value]) => (
             <Row key={label} label={label} value={value} />
           ))}

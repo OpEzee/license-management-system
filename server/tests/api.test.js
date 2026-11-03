@@ -5,7 +5,6 @@
  */
 process.env.NODE_ENV = 'test'
 process.env.CORS_ORIGIN = 'http://localhost:5173'
-process.env.LICENSE_KEY_PREFIX = 'OPEZ'
 process.env.JWT_SECRET = 'test-secret-that-is-long-enough-for-the-check'
 
 // Force email off. Without this, a configured .env would make the
@@ -13,6 +12,7 @@ process.env.JWT_SECRET = 'test-secret-that-is-long-enough-for-the-check'
 process.env.SMTP_HOST = ''
 process.env.SMTP_USER = ''
 process.env.SMTP_PASS = ''
+process.env.CLIENT_PIN = '1968'
 
 const path = require('path')
 const BACKEND = path.resolve(__dirname, '..')
@@ -187,7 +187,7 @@ const server = app.listen(0, async () => {
     const yearly = await call('POST', '/api/licenses', newLicense())
     check('creates a license', yearly.status === 201, yearly.body)
     const lic = yearly.body.license
-    check('key matches OPEZ-XXXX-XXXX-XXXX', /^OPEZ-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(lic.licenseKey))
+    check('key is 6 characters, letters and numbers', /^[A-Z0-9]{6}$/.test(lic.licenseKey) && /[A-Z]/.test(lic.licenseKey) && /[0-9]/.test(lic.licenseKey), lic.licenseKey)
     check('start date stored at start of day UTC', lic.startDate === '2020-01-01T00:00:00.000Z', lic.startDate)
     check('1 year computes the expiry', lic.expiryDate === '2021-01-01T23:59:59.999Z', lic.expiryDate)
 
@@ -328,84 +328,195 @@ const server = app.listen(0, async () => {
       (await call('POST', '/api/licenses/verify',
         { licenseKey: live.licenseKey }, { auth: false })).body.valid === true)
 
-    console.log('\n-- machine lock --')
+    console.log('\n-- no machine lock --')
     // Its own IP, so these calls do not eat the shared verify rate limit.
     const MACHINE_TEST_IP = '203.0.113.7'
-    // A key is claimed by the first machine that verifies it, and only that
-    // machine can use it afterwards. This is what stops one key being installed
-    // on several systems.
-    const mach = (await call('POST', '/api/licenses', newLicense({
+    // A key is not tied to a machine: whoever holds it can use it, on as many
+    // installations as they like.
+    const anywhere = (await call('POST', '/api/licenses', newLicense({
       duration: 'custom', startDate: '2020-01-01', expiryDate: '2099-01-01',
     }))).body.license
-    check('a new license starts unclaimed', mach.machineNumber === '', mach)
+    check('a license carries no machine number', !('machineNumber' in anywhere), anywhere)
 
-    const firstUse = await call('POST', '/api/licenses/verify',
-      { licenseKey: mach.licenseKey, productName: 'My Product', machineNumber: 'PC-ALPHA-01' },
+    const first = await call('POST', '/api/licenses/verify',
+      { licenseKey: anywhere.licenseKey, productName: 'My Product' },
       { auth: false, ip: MACHINE_TEST_IP })
-    check('the first machine claims the key',
-      firstUse.status === 200 && firstUse.body.valid === true &&
-        firstUse.body.license.machineNumber === 'PC-ALPHA-01', firstUse.body)
+    check('a key verifies without a machine number',
+      first.status === 200 && first.body.valid === true, first.body)
+    check('the answer names no machine', !('machineNumber' in first.body.license), first.body)
 
-    check('the claim is stored on the license',
-      (await call('GET', `/api/licenses/${mach.id}`)).body.license.machineNumber === 'PC-ALPHA-01')
-
-    const sameAgain = await call('POST', '/api/licenses/verify',
-      { licenseKey: mach.licenseKey, productName: 'My Product', machineNumber: 'PC-ALPHA-01' },
+    // Products built before the change still send one; it is ignored.
+    const pcA = await call('POST', '/api/licenses/verify',
+      { licenseKey: anywhere.licenseKey, productName: 'My Product', machineNumber: 'PC-ALPHA-01' },
       { auth: false, ip: MACHINE_TEST_IP })
-    check('the same machine keeps verifying', sameAgain.body.valid === true, sameAgain.body)
-
-    check('machine numbers match regardless of case',
-      (await call('POST', '/api/licenses/verify',
-        { licenseKey: mach.licenseKey, productName: 'My Product', machineNumber: 'pc-alpha-01' },
-        { auth: false, ip: MACHINE_TEST_IP })).body.valid === true)
-
-    const otherMachine = await call('POST', '/api/licenses/verify',
-      { licenseKey: mach.licenseKey, productName: 'My Product', machineNumber: 'PC-BETA-02' },
+    const pcB = await call('POST', '/api/licenses/verify',
+      { licenseKey: anywhere.licenseKey, productName: 'My Product', machineNumber: 'PC-BETA-02' },
       { auth: false, ip: MACHINE_TEST_IP })
-    check('a second machine is refused', otherMachine.status === 403, otherMachine.body)
-    check('and is told why',
-      otherMachine.body.message === 'License is already in use on another machine')
-    check('the refusal does not reveal the claimed machine',
-      !JSON.stringify(otherMachine.body).includes('PC-ALPHA-01'))
+    check('the same key verifies on two machines',
+      pcA.body.valid === true && pcB.body.valid === true, [pcA.body, pcB.body])
+    check('a machine number sent by an older product is not stored',
+      !('machineNumber' in (await call('GET', `/api/licenses/${anywhere.id}`)).body.license))
 
-    check('omitting the machine on a claimed key is refused too',
-      (await call('POST', '/api/licenses/verify',
-        { licenseKey: mach.licenseKey, productName: 'My Product' }, { auth: false, ip: MACHINE_TEST_IP })).status === 403)
+    const syncAny = await call('POST', '/api/licenses/sync',
+      { licenseKey: anywhere.licenseKey, machineNumber: 'PC-GAMMA-03' }, { auth: false, ip: MACHINE_TEST_IP })
+    check('sync answers for any machine', syncAny.body.valid === true, syncAny.body)
+    check('sync names no machine', !('machineNumber' in syncAny.body), syncAny.body)
 
-    // snake_case is accepted, since that is how products usually name it.
-    check('machine_number is accepted as well as machineNumber',
-      (await call('POST', '/api/licenses/verify',
-        { licenseKey: mach.licenseKey, productName: 'My Product', machine_number: 'PC-ALPHA-01' },
-        { auth: false, ip: MACHINE_TEST_IP })).body.valid === true)
+    await call('DELETE', `/api/licenses/${anywhere.id}`)
 
-    const syncSame = await call('POST', '/api/licenses/sync',
-      { licenseKey: mach.licenseKey, machineNumber: 'PC-ALPHA-01' }, { auth: false, ip: MACHINE_TEST_IP })
-    check('sync honours the claimed machine', syncSame.body.valid === true, syncSame.body)
-    check('sync reports the machine back', syncSame.body.machineNumber === 'PC-ALPHA-01')
-
-    const syncOther = await call('POST', '/api/licenses/sync',
-      { licenseKey: mach.licenseKey, machineNumber: 'PC-BETA-02' }, { auth: false, ip: MACHINE_TEST_IP })
-    check('sync refuses a different machine',
-      syncOther.status === 403 && syncOther.body.status === 'machine_mismatch', syncOther.body)
-
-    check('rejects a machine number with invalid characters',
-      (await call('POST', '/api/licenses/verify',
-        { licenseKey: mach.licenseKey, productName: 'My Product', machineNumber: 'bad machine!' },
-        { auth: false, ip: MACHINE_TEST_IP })).status === 400)
-
-    // A key that is not usable is never claimed, so a machine cannot lock
-    // itself to a license it could not have run anyway.
-    const dead = (await call('POST', '/api/licenses', newLicense({
-      duration: 'custom', startDate: '2020-01-01', expiryDate: '2020-02-01',
+    console.log('\n-- digital diya validate --')
+    const DD_IP = '203.0.113.11'
+    const DD_URL = '/api/licenses/digital-diya/validate'
+    const ddLive = (await call('POST', '/api/licenses', newLicense({
+      productName: 'Digital Diya', duration: 'custom', startDate: '2020-01-01', expiryDate: '2099-01-01',
     }))).body.license
-    await call('POST', '/api/licenses/verify',
-      { licenseKey: dead.licenseKey, productName: 'My Product', machineNumber: 'PC-GAMMA-03' },
-      { auth: false, ip: MACHINE_TEST_IP })
-    check('an expired key is not claimed',
-      (await call('GET', `/api/licenses/${dead.id}`)).body.license.machineNumber === '')
+    const ddOld = (await call('POST', '/api/licenses', newLicense({
+      productName: 'Digital Diya', duration: 'custom', startDate: '2020-01-01', expiryDate: '2020-02-01',
+    }))).body.license
+    const otherProduct = (await call('POST', '/api/licenses', newLicense({
+      duration: 'custom', startDate: '2020-01-01', expiryDate: '2099-01-01',
+    }))).body.license
 
-    await call('DELETE', `/api/licenses/${mach.id}`)
-    await call('DELETE', `/api/licenses/${dead.id}`)
+    const ddOk = await call('POST', DD_URL, { licenseKey: ddLive.licenseKey }, { auth: false, ip: DD_IP })
+    check('a live Digital Diya key is valid, with no token',
+      ddOk.status === 200 && ddOk.body.valid === true && ddOk.body.status === 'active', ddOk.body)
+    check('the answer carries the license',
+      ddOk.body.license.licenseKey === ddLive.licenseKey && ddOk.body.license.productName === 'Digital Diya', ddOk.body)
+    check('… with the POC and their email, for the status page',
+      ddOk.body.license.clientName === ddLive.clientName && ddOk.body.license.clientUserId === ddLive.clientUserId &&
+        Boolean(ddLive.clientUserId), ddOk.body.license)
+
+    check('the key is normalized before lookup',
+      (await call('POST', DD_URL, { licenseKey: ' ' + ddLive.licenseKey.toLowerCase() + ' ' },
+        { auth: false, ip: DD_IP })).body.valid === true)
+
+    const ddExpired = await call('POST', DD_URL, { licenseKey: ddOld.licenseKey }, { auth: false, ip: DD_IP })
+    check('an expired Digital Diya key is not valid',
+      ddExpired.status === 200 && ddExpired.body.valid === false && ddExpired.body.status === 'expired', ddExpired.body)
+
+    await call('PUT', `/api/licenses/${ddLive.id}/status`, { deactivated: true })
+    const ddOff = await call('POST', DD_URL, { licenseKey: ddLive.licenseKey }, { auth: false, ip: DD_IP })
+    check('a deactivated Digital Diya key is not valid',
+      ddOff.body.valid === false && ddOff.body.status === 'deactivated', ddOff.body)
+    await call('PUT', `/api/licenses/${ddLive.id}/status`, { deactivated: false })
+
+    const ddOther = await call('POST', DD_URL, { licenseKey: otherProduct.licenseKey }, { auth: false, ip: DD_IP })
+    check('a key for another product is refused',
+      ddOther.status === 403 && ddOther.body.valid === false && ddOther.body.status === 'invalid', ddOther.body)
+
+    const ddProductSent = await call('POST', DD_URL,
+      { licenseKey: otherProduct.licenseKey, productName: 'My Product' }, { auth: false, ip: DD_IP })
+    check('a productName in the body cannot widen it to another product', ddProductSent.status === 403, ddProductSent.body)
+
+    const ddUnknown = await call('POST', DD_URL, { licenseKey: 'ZZZZ99' }, { auth: false, ip: DD_IP })
+    check('an unknown key is 404', ddUnknown.status === 404 && ddUnknown.body.valid === false, ddUnknown.body)
+
+    check('a missing key is 400',
+      (await call('POST', DD_URL, {}, { auth: false, ip: DD_IP })).status === 400)
+
+    check('the other products still verify as before',
+      (await call('POST', '/api/licenses/verify', { licenseKey: otherProduct.licenseKey, productName: 'My Product' },
+        { auth: false, ip: DD_IP })).body.valid === true)
+
+    // The auto-sync endpoint: same checks, flat shape, always a checkedAt.
+    const DD_SYNC_IP = '203.0.113.12'
+    const DD_SYNC = '/api/licenses/digital-diya/sync'
+    const ddsOk = await call('POST', DD_SYNC, { licenseKey: ddLive.licenseKey }, { auth: false, ip: DD_SYNC_IP })
+    check('sync: a live Digital Diya key is valid',
+      ddsOk.status === 200 && ddsOk.body.valid === true && ddsOk.body.status === 'active', ddsOk.body)
+    check('sync: the answer is flat, with the key, dates and checkedAt',
+      ddsOk.body.licenseKey === ddLive.licenseKey && ddsOk.body.productName === 'Digital Diya' &&
+        Boolean(ddsOk.body.expiryDate) && !Number.isNaN(Date.parse(ddsOk.body.checkedAt)), ddsOk.body)
+    check('sync: … and the POC with their email, so a PC set up earlier learns it',
+      ddsOk.body.license.clientName === ddLive.clientName && ddsOk.body.license.clientUserId === ddLive.clientUserId, ddsOk.body.license)
+
+    const ddsExpired = await call('POST', DD_SYNC, { licenseKey: ddOld.licenseKey }, { auth: false, ip: DD_SYNC_IP })
+    check('sync: an expired key is reported as expired',
+      ddsExpired.status === 200 && ddsExpired.body.valid === false && ddsExpired.body.status === 'expired', ddsExpired.body)
+
+    await call('PUT', `/api/licenses/${ddLive.id}/status`, { deactivated: true })
+    const ddsOff = await call('POST', DD_SYNC, { licenseKey: ddLive.licenseKey }, { auth: false, ip: DD_SYNC_IP })
+    check('sync: switching a key off shows on the next sync',
+      ddsOff.body.valid === false && ddsOff.body.status === 'deactivated', ddsOff.body)
+    await call('PUT', `/api/licenses/${ddLive.id}/status`, { deactivated: false })
+    check('sync: switching it back on shows too',
+      (await call('POST', DD_SYNC, { licenseKey: ddLive.licenseKey }, { auth: false, ip: DD_SYNC_IP })).body.valid === true)
+
+    const ddsOther = await call('POST', DD_SYNC, { licenseKey: otherProduct.licenseKey }, { auth: false, ip: DD_SYNC_IP })
+    check('sync: a key for another product is refused, with checkedAt',
+      ddsOther.status === 403 && ddsOther.body.status === 'invalid' && Boolean(ddsOther.body.checkedAt), ddsOther.body)
+
+    const ddsUnknown = await call('POST', DD_SYNC, { licenseKey: 'ZZZZ99' }, { auth: false, ip: DD_SYNC_IP })
+    check('sync: an unknown key is 404, with checkedAt',
+      ddsUnknown.status === 404 && Boolean(ddsUnknown.body.checkedAt), ddsUnknown.body)
+
+    check('sync: a missing key is 400',
+      (await call('POST', DD_SYNC, {}, { auth: false, ip: DD_SYNC_IP })).status === 400)
+
+    // Screen app 1.4.13: the sync carries the screens the key runs on.
+    check('sync: no screens reported yet → screens is null',
+      ddsOk.body.screens === null && (await call('GET', `/api/licenses/${ddLive.id}`)).body.license.screens === null, ddsOk.body)
+    const ddsSeats = await call('POST', DD_SYNC,
+      { licenseKey: ddLive.licenseKey, screens: { used: 2, limit: 4, plan: 'Standard' } }, { auth: false, ip: DD_SYNC_IP })
+    check('sync: screens { used, limit, plan } are stored and echoed',
+      ddsSeats.status === 200 && ddsSeats.body.screens.used === 2 && ddsSeats.body.screens.limit === 4 &&
+        ddsSeats.body.screens.plan === 'Standard', ddsSeats.body)
+    const seatsDoc = (await call('GET', `/api/licenses/${ddLive.id}`)).body.license
+    check('the license shows them, with when they were reported',
+      seatsDoc.screens && seatsDoc.screens.used === 2 && seatsDoc.screens.limit === 4 &&
+        !Number.isNaN(Date.parse(seatsDoc.screens.updatedAt)), seatsDoc.screens)
+    const seatsAgain = await call('POST', DD_SYNC,
+      { licenseKey: ddLive.licenseKey, screens: { used: 2, limit: 4, plan: 'Standard' } }, { auth: false, ip: DD_SYNC_IP })
+    check('the same count again is not rewritten',
+      seatsAgain.body.screens.updatedAt === seatsDoc.screens.updatedAt, seatsAgain.body.screens)
+    const noLimit = await call('POST', DD_SYNC,
+      { licenseKey: ddLive.licenseKey, screens: { used: 3, limit: null, plan: null } }, { auth: false, ip: DD_SYNC_IP })
+    check('no limit (a server without a plan) is stored as limit null',
+      noLimit.body.screens.used === 3 && noLimit.body.screens.limit === null && noLimit.body.screens.plan === null, noLimit.body)
+    check('a sync without screens leaves them as they were',
+      (await call('POST', DD_SYNC, { licenseKey: ddLive.licenseKey }, { auth: false, ip: DD_SYNC_IP })).body.screens.used === 3)
+    for (const [what, screens] of [
+      ['not an object', 'two'], ['a negative count', { used: -1 }], ['no count', { limit: 4 }],
+      ['a zero limit', { used: 1, limit: 0 }], ['a long plan name', { used: 1, plan: 'x'.repeat(41) }],
+    ]) {
+      check(`sync: screens with ${what} → 400`,
+        (await call('POST', DD_SYNC, { licenseKey: ddLive.licenseKey, screens }, { auth: false, ip: DD_SYNC_IP })).status === 400)
+    }
+
+    console.log('\n-- licence details behind the staff PIN --')
+    const PIN_URL = '/api/licenses/details'
+    const pinAsk = (body, ip = '203.0.113.31') => call('POST', PIN_URL, body, { auth: false, ip })
+    const wrongPin = await pinAsk({ licenseKey: ddLive.licenseKey, productName: 'Digital Diya', pin: '1234' })
+    check('details: a wrong PIN is 401 WRONG_PIN, with no record',
+      wrongPin.status === 401 && wrongPin.body.code === 'WRONG_PIN' && !wrongPin.body.license, wrongPin.body)
+    const rightPin = await pinAsk({ licenseKey: ddLive.licenseKey, productName: 'Digital Diya', pin: '1968' })
+    check('details: the right PIN needs no admin token and returns the whole record',
+      rightPin.status === 200 && rightPin.body.license.licenseKey === ddLive.licenseKey &&
+        rightPin.body.license.clientName === ddLive.clientName && rightPin.body.license.clientUserId === ddLive.clientUserId &&
+        rightPin.body.license.companyName === ddLive.companyName && rightPin.body.license.status === 'active' &&
+        Boolean(rightPin.body.license.expiryDate), rightPin.body)
+    const oldPin = await pinAsk({ licenseKey: ddOld.licenseKey, productName: 'Digital Diya', pin: '1968' })
+    check('details: an expired licence is shown too, as expired',
+      oldPin.status === 200 && oldPin.body.license.status === 'expired', oldPin.body)
+    check('details: a key for another product is 403',
+      (await pinAsk({ licenseKey: otherProduct.licenseKey, productName: 'Digital Diya', pin: '1968' })).status === 403)
+    check('details: an unknown key is 404',
+      (await pinAsk({ licenseKey: 'ZZZZ99', pin: '1968' })).status === 404)
+    check('details: no PIN sent is 400',
+      (await pinAsk({ licenseKey: ddLive.licenseKey })).status === 400)
+    process.env.CLIENT_PIN = ''
+    const noPin = await pinAsk({ licenseKey: ddLive.licenseKey, pin: '' })
+    check('details: with no CLIENT_PIN on the server, nothing opens (503)',
+      noPin.status === 503 && noPin.body.code === 'PIN_NOT_CONFIGURED', noPin.body)
+    process.env.CLIENT_PIN = '1968'
+    const guesses = []
+    for (let i = 0; i < 11; i += 1) guesses.push((await pinAsk({ licenseKey: ddLive.licenseKey, pin: '0000' }, '203.0.113.32')).status)
+    check('details: wrong PINs are capped at 10 per 15 minutes',
+      guesses.slice(0, 10).every((c) => c === 401) && guesses[10] === 429, guesses)
+
+    await call('DELETE', `/api/licenses/${ddLive.id}`)
+    await call('DELETE', `/api/licenses/${ddOld.id}`)
+    await call('DELETE', `/api/licenses/${otherProduct.id}`)
 
     console.log('\n-- product self-service (POC + email) --')
     const SELF_IP = '203.0.113.9'
@@ -415,27 +526,19 @@ const server = app.listen(0, async () => {
     }))).body.license
 
     const noToken = await call('PUT', '/api/licenses/poc',
-      { licenseKey: self.licenseKey, machineNumber: 'SELF-PC-1', pocName: 'X' },
+      { licenseKey: self.licenseKey, pocName: 'X' },
       { auth: false, ip: SELF_IP })
     check('the endpoints need no admin token',
       noToken.status !== 401 && noToken.body.code !== 'NO_TOKEN', noToken.body)
-    check('an unclaimed license cannot be edited',
-      (await call('PUT', '/api/licenses/poc',
-        { licenseKey: self.licenseKey, machineNumber: 'SELF-PC-1', pocName: 'X' },
-        { auth: false, ip: SELF_IP })).body.code === 'LICENSE_NOT_CLAIMED')
-
-    await call('POST', '/api/licenses/verify',
-      { licenseKey: self.licenseKey, productName: 'My Product', machineNumber: 'SELF-PC-1' },
-      { auth: false, ip: SELF_IP })
 
     const poc = await call('PUT', '/api/licenses/poc',
-      { licenseKey: self.licenseKey, machineNumber: 'SELF-PC-1', pocName: 'New Name' },
+      { licenseKey: self.licenseKey, pocName: 'New Name' },
       { auth: false, ip: SELF_IP })
-    check('the claimed machine can change the POC name',
+    check('the key holder can change the POC name',
       poc.status === 200 && poc.body.license.pocName === 'New Name', poc.body)
 
     const mail = await call('PUT', '/api/licenses/email',
-      { licenseKey: self.licenseKey, machineNumber: 'SELF-PC-1', email: 'new.contact@test.com' },
+      { licenseKey: self.licenseKey, email: 'new.contact@test.com' },
       { auth: false, ip: SELF_IP })
     check('and the email', mail.status === 200 && mail.body.license.email === 'new.contact@test.com', mail.body)
 
@@ -445,32 +548,28 @@ const server = app.listen(0, async () => {
     check('changing one does not clear the other',
       saved.clientName === 'New Name' && saved.productName === 'My Product')
 
-    check('a different machine is refused',
-      (await call('PUT', '/api/licenses/poc',
-        { licenseKey: self.licenseKey, machineNumber: 'SELF-PC-2', pocName: 'Nope' },
-        { auth: false, ip: SELF_IP })).status === 403)
     check('an unknown key is refused',
       (await call('PUT', '/api/licenses/poc',
-        { licenseKey: 'OPEZ-0000-0000-0000', machineNumber: 'SELF-PC-1', pocName: 'Nope' },
+        { licenseKey: 'OPEZ-0000-0000-0000', pocName: 'Nope' },
         { auth: false, ip: SELF_IP })).status === 404)
     check('the wrong product is refused',
       (await call('PUT', '/api/licenses/poc',
-        { licenseKey: self.licenseKey, machineNumber: 'SELF-PC-1', productName: 'Other', pocName: 'Nope' },
+        { licenseKey: self.licenseKey, productName: 'Other', pocName: 'Nope' },
         { auth: false, ip: SELF_IP })).status === 403)
     check('a malformed email is refused',
       (await call('PUT', '/api/licenses/email',
-        { licenseKey: self.licenseKey, machineNumber: 'SELF-PC-1', email: 'not-an-email' },
+        { licenseKey: self.licenseKey, email: 'not-an-email' },
         { auth: false, ip: SELF_IP })).status === 400)
     check('an empty POC name is refused',
       (await call('PUT', '/api/licenses/poc',
-        { licenseKey: self.licenseKey, machineNumber: 'SELF-PC-1', pocName: '' },
+        { licenseKey: self.licenseKey, pocName: '' },
         { auth: false, ip: SELF_IP })).status === 400)
 
     // A switched-off license cannot rewrite its own record.
     await call('PUT', `/api/licenses/${self.id}/status`, { deactivated: true })
     check('a deactivated license cannot be edited',
       (await call('PUT', '/api/licenses/poc',
-        { licenseKey: self.licenseKey, machineNumber: 'SELF-PC-1', pocName: 'Nope' },
+        { licenseKey: self.licenseKey, pocName: 'Nope' },
         { auth: false, ip: SELF_IP })).status === 403)
     await call('PUT', `/api/licenses/${self.id}/status`, { deactivated: false })
 
@@ -733,16 +832,49 @@ const server = app.listen(0, async () => {
       (await formLogin('NewFormPass1')).status === 200 &&
       (await formLogin('FormPass123')).status === 401)
 
-    const emailMoved = await call('PUT', `/api/licenses/${fromForm.body.license.id}`,
-      pocLic({ clientUserId: 'form.poc.new@test.com', password: 'NewFormPass1' }))
-    const movedRows = (await call('GET', '/api/clients')).body.clients
-      .filter((c) => (c.clientName || '') === 'Form Poc')
-    check('changing the email moves the account rather than adding one',
-      emailMoved.status === 200 && movedRows.length === 1 &&
-        movedRows[0].username === 'form.poc.new@test.com' && movedRows[0].totalLicenses === 2,
-      movedRows)
-    check('and the POC signs in with the new email',
-      (await formLogin('NewFormPass1', 'form.poc.new@test.com')).status === 200)
+    // The license form edits one license: the POC account's other licenses never change with it.
+    const licenseById = async (id) => (await call('GET', `/api/licenses/${id}`)).body.license
+    const accountRow = async (username) => (await call('GET', '/api/clients')).body.clients
+      .find((c) => c.username === username)
+
+    const third = await call('POST', '/api/licenses',
+      pocLic({ clientName: 'Third Poc', productName: 'Third Product', password: 'NewFormPass1' }))
+    const secondAfter = await licenseById(second.body.license.id)
+    check("a new license under the same email doesn't rename the POC's other licenses",
+      third.status === 201 && third.body.license.clientName === 'Third Poc' &&
+        secondAfter.clientName === 'Form Poc' && secondAfter.companyName === 'Form Co' &&
+        (await accountRow('form.poc@test.com')).clientName === 'Form Poc',
+      { third: third.body, secondAfter })
+    await call('DELETE', `/api/licenses/${third.body.license.id}`)
+
+    // What renamed a Digital Diya license once: one license's POC and email edited while another
+    // license was filed under the same account.
+    const emailMoved = await call('PUT', `/api/licenses/${fromForm.body.license.id}`, pocLic({
+      clientName: 'Moved Poc', companyName: 'Moved Co', clientUserId: 'form.poc.new@test.com', password: 'MovedPass123',
+    }))
+    const secondStays = await licenseById(second.body.license.id)
+    check("editing one license's POC and email leaves the other license as it was",
+      emailMoved.status === 200 && emailMoved.body.license.clientUserId === 'form.poc.new@test.com' &&
+        emailMoved.body.license.clientName === 'Moved Poc' && secondStays.clientName === 'Form Poc' &&
+        secondStays.companyName === 'Form Co' && secondStays.clientUserId === 'form.poc@test.com',
+      { moved: emailMoved.body, secondStays })
+    const oldAccount = await accountRow('form.poc@test.com')
+    const newAccount = await accountRow('form.poc.new@test.com')
+    check('… the new email gets its own account; the old one keeps the other license and its sign-in',
+      oldAccount && oldAccount.totalLicenses === 1 && oldAccount.clientName === 'Form Poc' &&
+        newAccount && newAccount.totalLicenses === 1 &&
+        (await formLogin('NewFormPass1')).status === 200 &&
+        (await formLogin('MovedPass123', 'form.poc.new@test.com')).status === 200,
+      { oldAccount, newAccount })
+
+    // A license alone on its account is that POC being edited: the account moves to the new email.
+    const loneMoved = await call('PUT', `/api/licenses/${fromForm.body.license.id}`, pocLic({
+      clientName: 'Moved Poc', companyName: 'Moved Co', clientUserId: 'form.poc.newer@test.com', password: 'MovedPass123',
+    }))
+    check("a license alone on its account moves the account to the new email (no second account)",
+      loneMoved.status === 200 && !(await accountRow('form.poc.new@test.com')) &&
+        (await accountRow('form.poc.newer@test.com'))?.totalLicenses === 1 &&
+        (await formLogin('MovedPass123', 'form.poc.newer@test.com')).status === 200)
 
     check('a short password is refused',
       (await call('POST', '/api/licenses', pocLic({ password: 'short' }))).status === 400)
@@ -756,9 +888,9 @@ const server = app.listen(0, async () => {
 
     await call('DELETE', `/api/licenses/${fromForm.body.license.id}`)
     await call('DELETE', `/api/licenses/${second.body.license.id}`)
-    const formAccount = (await call('GET', '/api/clients')).body.clients
-      .find((c) => c.username === 'form.poc.new@test.com')
-    await call('DELETE', `/api/clients/${formAccount.id}`)
+    for (const username of ['form.poc@test.com', 'form.poc.newer@test.com']) {
+      await call('DELETE', `/api/clients/${(await accountRow(username)).id}`)
+    }
 
     console.log('\n-- update + delete --')
     const upd = await call('PUT', `/api/licenses/${lic.id}`, { soldBy: 'Dana Seller', duration: '1_month' })

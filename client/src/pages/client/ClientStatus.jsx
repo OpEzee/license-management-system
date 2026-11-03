@@ -14,7 +14,6 @@ const HEADLINES = {
   pending: (product) =>
     product ? `Your ${product} license has not started yet` : 'Your license has not started yet',
   invalid: () => 'This license key is no longer valid',
-  machine_mismatch: () => 'This license is in use on another machine',
 }
 
 /**
@@ -50,7 +49,6 @@ export default function ClientStatus() {
       const data = await productClientApi.sync({
         licenseKey: params.key,
         productName: params.product || undefined,
-        machineNumber: params.machine || undefined,
       })
       setResult(data)
       if (data.valid && !told.current) {
@@ -60,16 +58,12 @@ export default function ClientStatus() {
         }
       }
     } catch (err) {
-      if (err.status === 404) setResult({ valid: false, status: 'invalid', message: err.message })
-      else if (err.status === 403) {
-        setResult({
-          valid: false,
-          status: /another machine/i.test(err.message) ? 'machine_mismatch' : 'invalid',
-          message: err.message,
-        })
+      // 404: the key has gone. 403: it belongs to another product.
+      if (err.status === 404 || err.status === 403) {
+        setResult({ valid: false, status: 'invalid', message: err.message })
       } else setError(err.message)
     }
-  }, [params.key, params.product, params.machine])
+  }, [params.key, params.product])
 
   useEffect(() => {
     check()
@@ -90,7 +84,7 @@ export default function ClientStatus() {
   }
   const signOut = () => {
     if (!notifyProduct('signOut')) {
-      navigate(linkTo('/client/login', { product: params.product, machine: params.machine, theme: params.theme }))
+      navigate(linkTo('/client/login', { product: params.product, theme: params.theme }))
     }
   }
 
@@ -102,9 +96,9 @@ export default function ClientStatus() {
   ]
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-100 px-12 text-slate-900 dark:bg-[#060a16] dark:text-white">
-      <div className="flex w-full flex-col items-center">
-        <div className="flex w-full flex-col items-center rounded-[10.5px] border border-slate-200 bg-white px-[26px] pb-[26px] pt-[31px] dark:border-white/10 dark:bg-[#121a2a]">
+    <div className="flex min-h-screen items-center justify-center bg-slate-100 px-4 py-8 text-slate-900 min-[480px]:px-12 dark:bg-[#060a16] dark:text-white">
+      <div className="flex w-full max-w-[424px] flex-col items-center">
+        <div className="flex w-full max-w-[424px] flex-col items-center rounded-[10.5px] border border-slate-200 bg-white px-5 pb-[26px] pt-[31px] min-[480px]:px-[26px] dark:border-white/10 dark:bg-[#121a2a]">
           <span
             aria-hidden="true"
             className={`mb-[9px] block h-[44px] w-[44px] rounded-full bg-slate-100 p-[11px] dark:bg-[#1b2432] ${
@@ -180,14 +174,17 @@ export default function ClientStatus() {
             </button>
           )}
 
-          <button
-            type="button"
-            onClick={signOut}
-            disabled={handedOff}
-            className={LINK_CLASS}
-          >
-            Sign out
-          </button>
+          {/* A product with no sign-in of its own (Digital Diya) passes signout=0: Reactivate is the only way on. */}
+          {params.signout !== '0' && (
+            <button
+              type="button"
+              onClick={signOut}
+              disabled={handedOff}
+              className={LINK_CLASS}
+            >
+              Sign out
+            </button>
+          )}
         </div>
 
         {/* Plain text for now: there is no support channel to link to yet. */}

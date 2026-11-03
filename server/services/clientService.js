@@ -184,16 +184,42 @@ async function updateClient(id, { clientName, companyName, username, password })
   return toPublicClient(await ref.get(), { includePassword: true });
 }
 
+/** How many licenses are filed under this POC email, leaving out the one being edited (if any). */
+async function licensesFiledUnder(username, exceptLicenseId) {
+  const user = normalizeUsername(username);
+  const licenses = await licenseService.listLicenses();
+  return licenses.filter(
+    (l) => l.id !== exceptLicenseId && normalizeUsername(l.clientUserId) === user
+  ).length;
+}
+
 /**
  * Creates or updates the POC account a license is filed under, from the
  * license form — which is where POC credentials are now entered.
  *
- * The account is found by the license's email. When none has that email but
- * the license was already filed under another one, that account is the POC
- * being edited, so it takes the new email (and its licenses follow) rather
- * than a second account being created for the same person.
+ * The form edits ONE license, so it never changes the others. An account is
+ * shared by every license with its email, and editing the account carries its
+ * name, company and email to all of them (updateClient → relinkClientLicenses),
+ * so the form only does that when this license is the account's only one:
+ *
+ * - The account is found by the license's email. When none has that email but
+ *   the license was filed under another one that holds no other license, that
+ *   account is this POC being edited and takes the new email. If other licenses
+ *   still use it, the new email is a new POC: a new account, and the others
+ *   stay where they are.
+ * - An account other licenses also use keeps its POC name and company; only
+ *   the password follows the form (it is one sign-in for that email).
+ *
+ * The Clients page edits the account itself, and there every license follows.
  */
-async function savePocAccount({ clientName, companyName, email, password, previousEmail }) {
+async function savePocAccount({
+  clientName,
+  companyName,
+  email,
+  password,
+  previousEmail,
+  licenseId,
+}) {
   const username = normalizeUsername(email);
   if (!username) throw new ApiError(400, 'Email is required', 'EMAIL_REQUIRED');
   if (!String(companyName || '').trim()) {
@@ -202,15 +228,16 @@ async function savePocAccount({ clientName, companyName, email, password, previo
 
   let doc = await findByUsername(username);
   if (!doc && previousEmail && normalizeUsername(previousEmail) !== username) {
-    doc = await findByUsername(previousEmail);
+    const previous = await findByUsername(previousEmail);
+    if (previous && !(await licensesFiledUnder(previousEmail, licenseId))) doc = previous;
   }
 
   if (!doc) return createClient({ clientName, companyName, username, password });
 
   const data = doc.data();
+  const shared = (await licensesFiledUnder(data.username, licenseId)) > 0;
   return updateClient(doc.id, {
-    clientName,
-    companyName,
+    ...(shared ? {} : { clientName, companyName }),
     username,
     // Re-hashing an unchanged password costs a bcrypt round for nothing.
     ...(password && password !== data.password ? { password } : {}),

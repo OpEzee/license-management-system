@@ -39,17 +39,21 @@ export const BUTTON_CLASS =
 export const LINK_CLASS =
   'mt-[13px] text-[12px] font-medium text-slate-500 transition hover:text-slate-800 disabled:opacity-50 dark:text-white/60 dark:hover:text-white'
 
-/** Dark ground, one card centred on it. */
+/**
+ * Dark ground, one card centred on it. The card is as wide as it is in the
+ * product's 520px frame and no wider, so a desktop browser shows the same card
+ * in the middle of the screen; on a phone the side margins shrink.
+ */
 export function KioskPage({ children }) {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-100 px-12 text-slate-900 dark:bg-[#060a16] dark:text-white">
+    <div className="flex min-h-screen items-center justify-center bg-slate-100 px-4 py-8 text-slate-900 min-[480px]:px-12 dark:bg-[#060a16] dark:text-white">
       {children}
     </div>
   )
 }
 
 export const CARD_CLASS =
-  'flex w-full flex-col items-center rounded-[10.5px] border border-slate-200 bg-white px-[26px] pb-[26px] pt-[31px] dark:border-white/10 dark:bg-[#121a2a]'
+  'flex w-full max-w-[424px] flex-col items-center rounded-[10.5px] border border-slate-200 bg-white px-5 pb-[26px] pt-[31px] min-[480px]:px-[26px] dark:border-white/10 dark:bg-[#121a2a]'
 
 /**
  * The logo and heading that open the sign-in and key cards. The logo is the
