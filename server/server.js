@@ -13,7 +13,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const { initDb, settings: dbSettings } = require('./config/db');
+const { initDb, pingDb, settings: dbSettings } = require('./config/db');
 const licenseRoutes = require('./routes/licenseRoutes');
 const productRoutes = require('./routes/productRoutes');
 const clientRoutes = require('./routes/clientRoutes');
@@ -170,9 +170,19 @@ const exceptPublic = (middleware) => (req, res, next) =>
 app.use('/api', (req, res, next) => (isPublic(req) ? publicCors(req, res, next) : next()));
 app.use('/api', exceptPublic(adminCors), exceptPublic(adminLimiter));
 
-app.get('/health', (req, res) =>
-  res.json({ success: true, status: 'ok', timestamp: new Date().toISOString() })
-);
+// Render and Docker poll this. It pings MongoDB, so a lost database marks the
+// service unhealthy instead of leaving it "up" while every request fails. The
+// reason is logged here and never sent: the endpoint is public.
+app.get('/health', async (req, res) => {
+  const timestamp = new Date().toISOString();
+  try {
+    await pingDb();
+    res.json({ success: true, status: 'ok', db: 'up', timestamp });
+  } catch (err) {
+    console.error('[health] MongoDB ping failed:', err.message);
+    res.status(503).json({ success: false, status: 'error', db: 'down', timestamp });
+  }
+});
 
 // Authentication is enforced inside each router, so that the public license
 // endpoints can sit alongside the admin ones under the same prefix.

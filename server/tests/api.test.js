@@ -96,7 +96,37 @@ const server = app.listen(0, async () => {
 
   try {
     console.log('\n-- health --')
-    check('health ok', (await call('GET', '/health')).status === 200)
+    const healthUp = await call('GET', '/health')
+    check('health: 200 with db up while MongoDB answers',
+      healthUp.status === 200 && healthUp.body.success === true &&
+        healthUp.body.status === 'ok' && healthUp.body.db === 'up' && Boolean(healthUp.body.timestamp),
+      healthUp.body)
+
+    // Make the ping fail, then hang, on the shared Db handle the app uses.
+    const liveDb = db.getDb()
+    const realCommand = liveDb.command
+    const healthKeys = (body) => Object.keys(body).sort().join()
+    try {
+      liveDb.command = () => Promise.reject(new Error('connection refused at 10.0.0.5:27017 (secret detail)'))
+      const healthDown = await call('GET', '/health')
+      check('health: 503 with db down when the ping fails',
+        healthDown.status === 503 && healthDown.body.success === false &&
+          healthDown.body.status === 'error' && healthDown.body.db === 'down', healthDown.body)
+      check('health: the failure response carries no error details',
+        healthKeys(healthDown.body) === 'db,status,success,timestamp' &&
+          !JSON.stringify(healthDown.body).includes('secret detail'), healthDown.body)
+
+      liveDb.command = () => new Promise(() => {})
+      const startedAt = Date.now()
+      const healthHung = await call('GET', '/health')
+      const waited = Date.now() - startedAt
+      check('health: a ping that never answers gives 503 after about 2 seconds',
+        healthHung.status === 503 && healthHung.body.db === 'down' && waited >= 1900 && waited < 4000,
+        { status: healthHung.status, waited })
+    } finally {
+      liveDb.command = realCommand
+    }
+    check('health: back to 200 once MongoDB answers again', (await call('GET', '/health')).status === 200)
 
     console.log('\n-- authentication --')
     await adminService.upsertAdmin({ email: ADMIN.email, password: ADMIN.password })

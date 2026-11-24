@@ -144,7 +144,7 @@ Without a central system, licenses live in spreadsheets and emails. Opezee canno
 | Data          | MongoDB (`MONGODB_URI`, `MONGODB_DB`). The server refuses to start if it cannot connect. `npm run backup-db` exports every collection to JSON, and `npm run restore-db` loads a backup back in. The restore is idempotent, upserting by id. |
 | Rate limits   | Admin API: 300 requests per 15 minutes. Admin login: 10 per 15 minutes. Client login: 30 per 15 minutes. Verify, sync, poc and email: 20 per minute. All limits are per IP. |
 | Performance   | Verify and sync answer in under 500 ms (p95) on the Render free tier once warm. |
-| Availability  | `GET /health` is used for Render's health check. |
+| Availability  | `GET /health` is used for Render's and Docker's health checks. It pings MongoDB with a 2-second timeout: `200 { status: "ok", db: "up" }` when the ping succeeds, and `503 { status: "error", db: "down" }` when it fails, with no error details. |
 | Compatibility | Node 18+ (20 recommended). The dashboard supports the current Chrome, Edge, Firefox and Safari. |
 | Testing       | `npm test` runs the end-to-end API suite against a throwaway database on a local MongoDB server, and drops that database afterwards. It needs a running MongoDB but no credentials. It must pass before merging. |
 

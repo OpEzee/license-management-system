@@ -185,7 +185,7 @@ Database `MONGODB_DB` (default `opezee_licenses`). Every document's `_id` is a h
 | Docker | `Dockerfile`: a multi-stage Node 20 Alpine build. Pass env vars at runtime and expose port 5000. Inside the container, `127.0.0.1` is the container itself, so use `host.docker.internal` or a hosted URI. The build stage does not run the tests, because they need a live MongoDB |
 | LAN | `npm run build && npm start`, with MongoDB running on the same machine or `MONGODB_URI` pointing at it. The server listens on `0.0.0.0` and prints its LAN URLs |
 
-In every target, the server exits at start-up if it cannot reach MongoDB.
+In every target, the server exits at start-up if it cannot reach MongoDB. Once running, `GET /health` pings MongoDB through `pingDb()` (`config/db.js`), with a 2-second timeout. It answers `200 … db: "up"` or `503 … db: "down"`, so Render and the Docker `HEALTHCHECK` mark the service unhealthy when the database is lost. The reason is logged and never sent in the response.
 
 ## 10. Testing
 
