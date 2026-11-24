@@ -1,9 +1,16 @@
 node_modules/
 dist/
-.env
 *.local
-serviceAccountKey.json
 .DS_Store
+
+# Secrets: any env file except the example
+.env
+.env*
+!.env.example
+
+# Service-account keys
+serviceAccountKey.json
+*-firebase-adminsdk-*.json
 
 # Database exports (contain password hashes)
 backups/
