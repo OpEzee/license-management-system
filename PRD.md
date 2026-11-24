@@ -122,6 +122,7 @@ Without a central system, licenses live in spreadsheets and emails. Opezee canno
 | API-3 | `POST /api/clients/login` | Checks a client's username and password, optionally for one product. Limited to 30 attempts per 15 minutes per IP. |
 | API-4 | `PUT /api/licenses/poc`, `PUT /api/licenses/email` | Let the product update its own POC name or email. The key alone acts as the credential. These endpoints neither check nor claim a machine slot. Only allowed while the license is active. |
 | API-5 | — | Verify, sync, poc and email are limited to 20 requests per minute per IP. They allow CORS from any origin. |
+| API-6 | `POST /api/licenses/details` | The license record behind the staff PIN (the hosted `/client/pin` page). The PIN is `CLIENT_PIN`, a unique 4 to 8 digits. A wrong PIN gets 401 `WRONG_PIN`. A missing PIN gets 503 `PIN_NOT_CONFIGURED`, and so does the old example value `1968` in production, where start-up also logs a warning (the server still starts). Limited to 10 failed attempts per 15 minutes per IP. |
 
 ### 5.8 Max screens per license
 

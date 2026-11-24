@@ -5,6 +5,7 @@ const licenseService = require('../services/licenseService');
 const clientService = require('../services/clientService');
 const mailService = require('../services/mailService');
 const brandingService = require('../services/brandingService');
+const { staffPin } = require('../utils/staffPin');
 
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
@@ -224,20 +225,19 @@ const verify = asyncHandler(async (req, res) => {
  * whole record — POC, email, company, dates and status — whatever the status,
  * since staff check an expired licence too. Nothing is changed.
  */
-const PIN_PATTERN = /^\d{4,8}$/;
-
-function pinMatches(given) {
-  const expected = String(process.env.CLIENT_PIN || '').trim();
+function pinMatches(given, expected) {
   const a = Buffer.from(String(given));
   const b = Buffer.from(expected);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 const details = asyncHandler(async (req, res) => {
-  if (!PIN_PATTERN.test(String(process.env.CLIENT_PIN || '').trim())) {
+  // Read per request, so a changed environment needs no restart to apply.
+  const { configured, pin } = staffPin();
+  if (!configured) {
     return res.status(503).json({ success: false, code: 'PIN_NOT_CONFIGURED', message: 'The PIN is not set up on the license server.' });
   }
-  if (!pinMatches(req.body.pin)) {
+  if (!pinMatches(req.body.pin, pin)) {
     return res.status(401).json({ success: false, code: 'WRONG_PIN', message: 'The PIN is incorrect.' });
   }
 

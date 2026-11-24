@@ -20,6 +20,7 @@ const clientRoutes = require('./routes/clientRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const { adminLimiter } = require('./middleware/rateLimiter');
 const { ApiError, notFound, errorHandler } = require('./middleware/errorHandler');
+const { staffPin } = require('./utils/staffPin');
 
 /** The machine's own LAN addresses, printed so the URL is easy to share. */
 function lanAddresses() {
@@ -230,8 +231,23 @@ function checkAuthConfig() {
   }
 }
 
+/**
+ * A warning, not a refusal to start: the PIN only guards the staff details
+ * page, and that page already answers 503 until a real PIN is set. Licence
+ * checks for every product keep working either way.
+ */
+function checkStaffPinConfig() {
+  if (process.env.NODE_ENV !== 'production') return;
+  const { configured, reason } = staffPin();
+  if (configured) return;
+  console.warn(`\n[startup] WARNING: ${reason}.`);
+  console.warn('[startup] The staff PIN page (/client/pin) stays off (503 PIN_NOT_CONFIGURED)');
+  console.warn('[startup] until CLIENT_PIN is set to a unique 4 to 8 digit PIN.\n');
+}
+
 async function start() {
   checkAuthConfig();
+  checkStaffPinConfig();
 
   try {
     await initDb();

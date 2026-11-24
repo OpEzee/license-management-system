@@ -29,6 +29,11 @@ services:
         sync: false
       - key: MONGODB_DB
         value: opezee_licenses
+      # The staff PIN of the hosted /client/pin page: a unique 4 to 8 digits,
+      # set in the Render dashboard. Until it is, that page answers 503, and
+      # the example value 1968 is refused in production.
+      - key: CLIENT_PIN
+        sync: false
       # The dashboard is same-origin, so this is only needed when another site
       # calls the admin API. The public license endpoints never need it.
       - key: CORS_ORIGIN

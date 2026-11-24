@@ -677,6 +677,37 @@ const server = app.listen(0, async () => {
     const noPin = await pinAsk({ licenseKey: ddLive.licenseKey, pin: '' })
     check('details: with no CLIENT_PIN on the server, nothing opens (503)',
       noPin.status === 503 && noPin.body.code === 'PIN_NOT_CONFIGURED', noPin.body)
+
+    // Production refuses a missing PIN and the old example value 1968. Its own
+    // IP, so these calls do not use up the PIN limiter the guesses below test.
+    const PROD_PIN_IP = '198.51.100.40'
+    const realNodeEnv = process.env.NODE_ENV
+    try {
+      process.env.NODE_ENV = 'production'
+      process.env.CLIENT_PIN = '1968'
+      const prodExample = await pinAsk({ licenseKey: ddLive.licenseKey, productName: 'Digital Diya', pin: '1968' }, PROD_PIN_IP)
+      check('details in production: the example PIN 1968 counts as not configured (503)',
+        prodExample.status === 503 && prodExample.body.code === 'PIN_NOT_CONFIGURED' && !prodExample.body.license,
+        prodExample.body)
+      process.env.CLIENT_PIN = ''
+      const prodMissing = await pinAsk({ licenseKey: ddLive.licenseKey, productName: 'Digital Diya', pin: '1968' }, PROD_PIN_IP)
+      check('details in production: a missing PIN is 503 PIN_NOT_CONFIGURED',
+        prodMissing.status === 503 && prodMissing.body.code === 'PIN_NOT_CONFIGURED', prodMissing.body)
+      process.env.CLIENT_PIN = '482913'
+      const prodUnique = await pinAsk({ licenseKey: ddLive.licenseKey, productName: 'Digital Diya', pin: '482913' }, PROD_PIN_IP)
+      check('details in production: a unique PIN works',
+        prodUnique.status === 200 && prodUnique.body.license?.licenseKey === ddLive.licenseKey, prodUnique.body)
+      check('details in production: 1968 is now simply the wrong PIN',
+        (await pinAsk({ licenseKey: ddLive.licenseKey, productName: 'Digital Diya', pin: '1968' }, PROD_PIN_IP)).status === 401)
+    } finally {
+      process.env.NODE_ENV = realNodeEnv
+    }
+    const { staffPin } = require(path.join(BACKEND, 'utils/staffPin.js'))
+    check('staffPin: 1968 is accepted outside production',
+      staffPin({ NODE_ENV: 'test', CLIENT_PIN: '1968' }).configured === true)
+    check('staffPin: a malformed PIN is not configured anywhere',
+      staffPin({ NODE_ENV: 'test', CLIENT_PIN: '12ab' }).configured === false &&
+        staffPin({ NODE_ENV: 'production', CLIENT_PIN: '123' }).configured === false)
     process.env.CLIENT_PIN = '1968'
     const guesses = []
     for (let i = 0; i < 11; i += 1) guesses.push((await pinAsk({ licenseKey: ddLive.licenseKey, pin: '0000' }, '203.0.113.32')).status)
