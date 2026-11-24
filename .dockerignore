@@ -1,0 +1,12 @@
+node_modules
+dist
+.git
+.github
+.claude
+.env
+.env.*
+!.env.example
+serviceAccountKey.json
+*.log
+feedback.txt
+correction.txt

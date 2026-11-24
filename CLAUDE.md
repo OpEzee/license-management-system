@@ -1,0 +1,88 @@
+# CLAUDE.md — Opezee License Management System
+
+Claude Code reads this file at the start of every session in this repo. It holds the working rules. The other docs cover:
+
+- `PRD.md`: what to build
+- `ARCHITECTURE.md`: how the system fits together
+- `README.md`: setup and the API reference
+
+## Project in one line
+
+This is the admin dashboard (React 18 + Vite + Tailwind) and license API (Express 4 + Firestore) that Opezee uses to issue licenses for its products. Products call public endpoints to verify a license and re-sync it every hour. Each license is locked to one machine.
+
+## Environment
+
+- The developer works on Windows at `C:\projects\licence-management-system`, editing in VS Code. Give shell commands that work in PowerShell, and use `npm` scripts in preference to bash-only commands.
+- Use Node 20, as pinned in `.nvmrc`. The project supports Node 18 and later.
+- There is one `.env` at the root. Never print it, commit it or edit its secrets.
+
+## Commands
+
+| Task | Command |
+| ---- | ------- |
+| Install | `npm install` |
+| Run the dev server (API + dashboard) | `npm run dev`, then open http://localhost:5173 |
+| Run the API only | `npm run dev:api` |
+| Run the dashboard only | `npm run dev:web` |
+| Run the tests | `npm test` |
+| Build for production | `npm run build`, then `npm start` (port 5000) |
+| Create or reset the admin | `npm run create-admin` |
+| Check SMTP | `npm run check-mail [address]` |
+| Run in Docker | `docker build -t opezee-lms .` then `docker run --env-file .env -p 5000:5000 opezee-lms` |
+
+**Definition of done:** `npm test` passes, `npm run build` succeeds, and `README.md` / `PRD.md` are updated if behaviour or scope changed.
+
+## Code style
+
+- **Server:** CommonJS with `'use strict';`. Use semicolons and single quotes.
+- **Client:** ESM, `.jsx` function components and hooks. Omit semicolons and use single quotes.
+- Comments explain *why*, not *what*. Follow the existing comment tone.
+- Do not add TypeScript, new frameworks or state libraries, or a second `package.json` unless asked.
+
+## Rules for server changes
+
+1. Respect the layers. Routes hold validation, controllers shape HTTP responses, and services own Firestore and the business rules. Never call Firestore from a controller or a route.
+2. Validate every input with express-validator. Text inputs get `.trim().escape()` and a max length. Optional form fields use `.optional({ values: 'falsy' })`.
+3. For expected errors, throw `new ApiError(status, message, CODE)`. Responses look like `{ success, message, code, errors? }`, and never include a stack trace.
+4. Public routes go **above** `router.use(requireAdmin)`. They must also be added to `PUBLIC_PATHS` in `server/server.js`, and each one needs a rate limiter.
+5. Never weaken these:
+   - status is always derived with `computeStatus()`
+   - the server calculates expiry dates
+   - license keys come only from `generateLicenseKey.js` and cannot be edited
+   - the machine lock: a missing or different machine number means `machine_mismatch`
+   - wrong-email and wrong-password logins return the same error
+6. Keep the legacy-field fallbacks in `toPublicLicense()` (`clientEmail` and `createdAt`).
+
+## Rules for client changes
+
+1. Call the API only through the modules in `client/src/services/api.js`. Never call `axios` from a component.
+2. Reuse the existing components before creating new ones: `Modal`, `ConfirmDialog`, `Toast`, `TableToolbar`, `StatusBadge`, `StatCard`, `IconButton`, `DatePicker` and `States`.
+3. Use only Tailwind classes, and every screen must work in both light and dark mode.
+4. To add a page: add the file to `pages/`, add a route inside `ProtectedRoute` → `AdminLayout` in `App.jsx`, and add a sidebar entry in `AdminLayout.jsx`.
+
+## Tests
+
+- All tests live in `server/tests/api.test.js`, which runs against an in-memory Firestore fake.
+- Every new or changed endpoint needs tests for:
+  - success
+  - validation (400)
+  - no token (401)
+  - each error code
+- If a new endpoint needs a Firestore query the fake lacks, extend the fake.
+
+## Git
+
+- Branch from `main`. Use Conventional Commit prefixes: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`.
+- Keep each pull request to one concern. Each description covers what changed, why, and how it was tested.
+
+## How to work with me
+
+- Before a change that touches more than about three files, give a short plan and wait for a go-ahead.
+- When the PRD and the code disagree, point it out and ask which one is right. Don't silently pick one.
+- Prefer small diffs. Do not reformat files you are not otherwise changing.
+
+## Current priorities
+
+1. Build the Clients page (`client/src/pages/Clients.jsx`, its route and sidebar entry). The backend `/api/clients` CRUD already exists.
+2. Repo clean-up: remove `feedback.txt` (it belongs to another project), fix `.claude/launch.json` (it points to a missing `frontend/` folder), and correct the README's list of public endpoints.
+3. Add an admin action that releases a license's machine lock.
