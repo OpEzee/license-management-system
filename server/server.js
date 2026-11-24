@@ -13,7 +13,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const { initFirebase } = require('./config/firebase');
+const { initDb, settings: dbSettings } = require('./config/db');
 const licenseRoutes = require('./routes/licenseRoutes');
 const productRoutes = require('./routes/productRoutes');
 const clientRoutes = require('./routes/clientRoutes');
@@ -220,14 +220,17 @@ function checkAuthConfig() {
   }
 }
 
-function start() {
+async function start() {
   checkAuthConfig();
 
   try {
-    initFirebase();
+    await initDb();
+    const { uri, dbName } = dbSettings();
+    // Hide any user:password@ part of the connection string.
+    console.log(`Connected to MongoDB at ${uri.replace(/\/\/[^@/]*@/, '//***@')} (database "${dbName}")`);
   } catch (err) {
-    console.error('\n[startup] Firebase initialization failed:', err.message);
-    console.error('[startup] Copy .env.example to .env and fill in your credentials.\n');
+    console.error('\n[startup] Could not connect to MongoDB:', err.message);
+    console.error('[startup] Make sure MongoDB is running and MONGODB_URI in .env is correct.\n');
     process.exit(1);
   }
 

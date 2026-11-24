@@ -3,7 +3,7 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
-const { getDb, Timestamp } = require('../config/firebase');
+const { collection, newId } = require('../config/db');
 const { ApiError } = require('../middleware/errorHandler');
 
 const COLLECTION = 'admins';
@@ -11,16 +11,15 @@ const EMAIL_COLLECTION = 'emailConfigs';
 const BCRYPT_ROUNDS = 12;
 
 function admins() {
-  return getDb().collection(COLLECTION);
+  return collection(COLLECTION);
 }
 
 function emails() {
-  return getDb().collection(EMAIL_COLLECTION);
+  return collection(EMAIL_COLLECTION);
 }
 
 function toIso(value) {
   if (!value) return null;
-  if (typeof value.toDate === 'function') return value.toDate().toISOString();
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
@@ -38,10 +37,9 @@ function jwtSecret() {
 }
 
 /** Never leaks passwordHash, whatever the caller does with the result. */
-function toPublicAdmin(doc) {
-  const data = doc.data();
+function toPublicAdmin(data) {
   return {
-    id: doc.id,
+    id: data._id,
     email: data.email,
     name: data.name || 'Administrator',
     createdAt: toIso(data.createdAt),
@@ -50,11 +48,7 @@ function toPublicAdmin(doc) {
 }
 
 async function findAdminByEmail(email) {
-  const snap = await admins()
-    .where('email', '==', String(email).trim().toLowerCase())
-    .limit(1)
-    .get();
-  return snap.empty ? null : snap.docs[0];
+  return admins().findOne({ email: String(email).trim().toLowerCase() });
 }
 
 function signToken(admin) {
@@ -82,22 +76,31 @@ async function upsertAdmin({ email, password, name }) {
   const existing = await findAdminByEmail(normalized);
 
   if (existing) {
-    await existing.ref.update({
-      passwordHash,
-      name: name || existing.data().name || 'Administrator',
-      updatedAt: Timestamp.now(),
-    });
-    return { created: false, admin: toPublicAdmin(await existing.ref.get()) };
+    const updated = await admins().findOneAndUpdate(
+      { _id: existing._id },
+      {
+        $set: {
+          passwordHash,
+          name: name || existing.name || 'Administrator',
+          updatedAt: new Date(),
+        },
+      },
+      { returnDocument: 'after' }
+    );
+    return { created: false, admin: toPublicAdmin(updated) };
   }
 
-  const ref = await admins().add({
+  const now = new Date();
+  const doc = {
+    _id: newId(),
     email: normalized,
     passwordHash,
     name: name || 'Administrator',
-    createdAt: Timestamp.now(),
-    updatedAt: Timestamp.now(),
-  });
-  return { created: true, admin: toPublicAdmin(await ref.get()) };
+    createdAt: now,
+    updatedAt: now,
+  };
+  await admins().insertOne(doc);
+  return { created: true, admin: toPublicAdmin(doc) };
 }
 
 async function login({ email, password }) {
@@ -105,7 +108,7 @@ async function login({ email, password }) {
 
   // Compare against a dummy hash when the account is unknown, so that a wrong
   // email and a wrong password take the same time to answer.
-  const hash = doc ? doc.data().passwordHash : '$2a$12$invalidinvalidinvalidinvalidinvalidinvalidinvalidinvalidi';
+  const hash = doc ? doc.passwordHash : '$2a$12$invalidinvalidinvalidinvalidinvalidinvalidinvalidinvalidi';
   const ok = await bcrypt.compare(String(password), hash);
 
   if (!doc || !ok) {
@@ -117,17 +120,16 @@ async function login({ email, password }) {
 }
 
 async function getAdminById(id) {
-  const doc = await admins().doc(id).get();
-  if (!doc.exists) throw new ApiError(401, 'Account no longer exists', 'ADMIN_NOT_FOUND');
+  const doc = await admins().findOne({ _id: String(id) });
+  if (!doc) throw new ApiError(401, 'Account no longer exists', 'ADMIN_NOT_FOUND');
   return toPublicAdmin(doc);
 }
 
 async function changePassword(adminId, { currentPassword, newPassword }) {
-  const ref = admins().doc(adminId);
-  const doc = await ref.get();
-  if (!doc.exists) throw new ApiError(401, 'Account no longer exists', 'ADMIN_NOT_FOUND');
+  const doc = await admins().findOne({ _id: String(adminId) });
+  if (!doc) throw new ApiError(401, 'Account no longer exists', 'ADMIN_NOT_FOUND');
 
-  const ok = await bcrypt.compare(String(currentPassword), doc.data().passwordHash);
+  const ok = await bcrypt.compare(String(currentPassword), doc.passwordHash);
   if (!ok) {
     throw new ApiError(400, 'Your current password is incorrect', 'WRONG_CURRENT_PASSWORD');
   }
@@ -140,20 +142,24 @@ async function changePassword(adminId, { currentPassword, newPassword }) {
     );
   }
 
-  await ref.update({
-    passwordHash: await bcrypt.hash(String(newPassword), BCRYPT_ROUNDS),
-    updatedAt: Timestamp.now(),
-  });
+  await admins().updateOne(
+    { _id: doc._id },
+    {
+      $set: {
+        passwordHash: await bcrypt.hash(String(newPassword), BCRYPT_ROUNDS),
+        updatedAt: new Date(),
+      },
+    }
+  );
 
   return { success: true };
 }
 
 // --- Email configuration -----------------------------------------------------
 
-function toPublicEmail(doc) {
-  const data = doc.data();
+function toPublicEmail(data) {
   return {
-    id: doc.id,
+    id: data._id,
     email: data.email,
     label: data.label || '',
     isDefault: Boolean(data.isDefault),
@@ -161,32 +167,37 @@ function toPublicEmail(doc) {
   };
 }
 
+async function findEmailOrThrow(id) {
+  const doc = await emails().findOne({ _id: String(id) });
+  if (!doc) throw new ApiError(404, 'Email configuration not found', 'EMAIL_NOT_FOUND');
+  return doc;
+}
+
 async function listEmails() {
-  const snap = await emails().orderBy('createdAt', 'asc').get();
-  return snap.docs.map(toPublicEmail);
+  const docs = await emails().find().sort({ createdAt: 1 }).toArray();
+  return docs.map(toPublicEmail);
 }
 
 async function addEmail({ email, label }) {
   const normalized = String(email).trim().toLowerCase();
 
-  const existing = await emails().where('email', '==', normalized).limit(1).get();
-  if (!existing.empty) {
+  if (await emails().findOne({ email: normalized }, { projection: { _id: 1 } })) {
     throw new ApiError(409, 'That email is already configured', 'EMAIL_EXISTS');
   }
 
   // The very first address configured becomes the default automatically,
   // so there is never a state with addresses but no default.
-  const all = await emails().limit(1).get();
-  const isDefault = all.empty;
+  const isDefault = (await emails().countDocuments({}, { limit: 1 })) === 0;
 
-  const ref = await emails().add({
+  const doc = {
+    _id: newId(),
     email: normalized,
     label: label || '',
     isDefault,
-    createdAt: Timestamp.now(),
-  });
-
-  return toPublicEmail(await ref.get());
+    createdAt: new Date(),
+  };
+  await emails().insertOne(doc);
+  return toPublicEmail(doc);
 }
 
 /**
@@ -194,16 +205,14 @@ async function addEmail({ email, label }) {
  * addresses may be default at once — marking one never unmarks another.
  */
 async function updateEmail(id, { email, label, isDefault }) {
-  const ref = emails().doc(id);
-  const doc = await ref.get();
-  if (!doc.exists) throw new ApiError(404, 'Email configuration not found', 'EMAIL_NOT_FOUND');
+  await findEmailOrThrow(id);
 
   const updates = {};
 
   if (email !== undefined) {
     const normalized = String(email).trim().toLowerCase();
-    const clash = await emails().where('email', '==', normalized).limit(1).get();
-    if (!clash.empty && clash.docs[0].id !== id) {
+    const clash = await emails().findOne({ email: normalized }, { projection: { _id: 1 } });
+    if (clash && clash._id !== id) {
       throw new ApiError(409, 'That email is already configured', 'EMAIL_EXISTS');
     }
     updates.email = normalized;
@@ -213,31 +222,30 @@ async function updateEmail(id, { email, label, isDefault }) {
   if (label !== undefined) updates.label = label || '';
   if (isDefault !== undefined) updates.isDefault = Boolean(isDefault);
 
-  if (Object.keys(updates).length) await ref.update(updates);
-  return toPublicEmail(await ref.get());
+  if (Object.keys(updates).length) await emails().updateOne({ _id: id }, { $set: updates });
+  return toPublicEmail(await emails().findOne({ _id: id }));
 }
 
 /** Marks an address as a default, or clears that mark. Others are untouched. */
 async function setDefaultEmail(id, isDefault = true) {
-  const ref = emails().doc(id);
-  const doc = await ref.get();
-  if (!doc.exists) throw new ApiError(404, 'Email configuration not found', 'EMAIL_NOT_FOUND');
-
-  await ref.update({ isDefault: Boolean(isDefault) });
-  return toPublicEmail(await ref.get());
+  await findEmailOrThrow(id);
+  const doc = await emails().findOneAndUpdate(
+    { _id: id },
+    { $set: { isDefault: Boolean(isDefault) } },
+    { returnDocument: 'after' }
+  );
+  return toPublicEmail(doc);
 }
 
 async function deleteEmail(id) {
-  const ref = emails().doc(id);
-  const doc = await ref.get();
-  if (!doc.exists) throw new ApiError(404, 'Email configuration not found', 'EMAIL_NOT_FOUND');
+  const doc = await findEmailOrThrow(id);
 
   // Deleting a default is fine while another default remains; the list should
   // never be left with addresses but no default at all.
-  const all = await emails().get();
-  const otherDefaults = all.docs.filter((d) => d.id !== id && Boolean(d.data().isDefault));
+  const all = await emails().find().toArray();
+  const otherDefaults = all.filter((d) => d._id !== id && Boolean(d.isDefault));
 
-  if (Boolean(doc.data().isDefault) && all.size > 1 && otherDefaults.length === 0) {
+  if (Boolean(doc.isDefault) && all.length > 1 && otherDefaults.length === 0) {
     throw new ApiError(
       400,
       'Mark another email as default before deleting this one',
@@ -245,7 +253,7 @@ async function deleteEmail(id) {
     );
   }
 
-  await ref.delete();
+  await emails().deleteOne({ _id: id });
   return { id };
 }
 

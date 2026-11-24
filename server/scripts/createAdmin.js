@@ -12,9 +12,9 @@
  * you recover from being locked out.
  */
 
-require('dotenv').config();
+require('dotenv').config({ path: require('path').join(__dirname, '../../.env') });
 
-const { initFirebase } = require('../config/firebase');
+const { initDb, closeDb } = require('../config/db');
 const adminService = require('../services/adminService');
 
 const MIN_PASSWORD_LENGTH = 8;
@@ -41,9 +41,10 @@ async function main() {
     process.exit(1);
   }
 
-  initFirebase();
+  await initDb();
 
   const { created, admin } = await adminService.upsertAdmin({ email, password, name });
+  await closeDb();
 
   console.log('');
   console.log(created ? 'Admin account created.' : 'Admin account already existed — password reset.');

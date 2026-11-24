@@ -1,6 +1,6 @@
 'use strict';
 
-const { getDb, Timestamp, FieldValue } = require('../config/firebase');
+const { collection: getCollection, newId } = require('../config/db');
 const { ApiError } = require('../middleware/errorHandler');
 const { resolveLicensePeriod } = require('../utils/licenseDates');
 const {
@@ -11,7 +11,17 @@ const {
 const COLLECTION = 'licenses';
 
 function collection() {
-  return getDb().collection(COLLECTION);
+  return getCollection(COLLECTION);
+}
+
+async function findOrThrow(id) {
+  const doc = await collection().findOne({ _id: String(id) });
+  if (!doc) throw new ApiError(404, 'License not found', 'LICENSE_NOT_FOUND');
+  return doc;
+}
+
+async function findByKey(licenseKey) {
+  return collection().findOne({ licenseKey: normalizeLicenseKey(licenseKey) });
 }
 
 const normalizeUserId = (value) => String(value || '').trim().toLowerCase();
@@ -23,10 +33,11 @@ const normalizeUserId = (value) => String(value || '').trim().toLowerCase();
  * depends on this module; going the other way would be a require cycle.
  */
 async function clientDirectory() {
-  const snap = await getDb().collection('clients').get();
+  const docs = await getCollection('clients')
+    .find({}, { projection: { username: 1, clientName: 1, companyName: 1 } })
+    .toArray();
   const map = new Map();
-  snap.docs.forEach((doc) => {
-    const data = doc.data();
+  docs.forEach((data) => {
     if (!data.username) return;
     map.set(normalizeUserId(data.username), {
       clientName: data.clientName,
@@ -36,10 +47,9 @@ async function clientDirectory() {
   return map;
 }
 
-/** Firestore Timestamp | Date | string -> ISO string (or null). */
+/** Date | string -> ISO string (or null). */
 function toIso(value) {
   if (!value) return null;
-  if (typeof value.toDate === 'function') return value.toDate().toISOString();
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
@@ -67,8 +77,7 @@ function computeStatus(startDate, expiryDate, deactivated = false, now = new Dat
   return 'active';
 }
 
-function toPublicLicense(doc, directory) {
-  const data = doc.data();
+function toPublicLicense(data, directory) {
   // Licenses created before start dates and the user-id rename fall back to
   // their old fields, so existing documents keep working untouched.
   const startDate = data.startDate || data.createdAt;
@@ -80,7 +89,7 @@ function toPublicLicense(doc, directory) {
   const account = directory?.get(normalizeUserId(clientUserId));
 
   return {
-    id: doc.id,
+    id: data._id,
     licenseKey: data.licenseKey,
     // The name stored on the license wins: it is what the admin typed on the
     // form. A linked client account is only the fallback, for licenses issued
@@ -122,8 +131,8 @@ function toScreens(value) {
 async function generateUniqueLicenseKey(attempts = 10) {
   for (let i = 0; i < attempts; i += 1) {
     const key = generateLicenseKey();
-    const existing = await collection().where('licenseKey', '==', key).limit(1).get();
-    if (existing.empty) return key;
+    const existing = await collection().findOne({ licenseKey: key }, { projection: { _id: 1 } });
+    if (!existing) return key;
   }
   throw new ApiError(500, 'Could not allocate a unique license key', 'KEY_ALLOCATION_FAILED');
 }
@@ -169,10 +178,12 @@ async function createLicense(payload) {
     duration: payload.duration,
   });
 
-  const startTs = Timestamp.fromDate(period.startDate);
-  const expiryTs = Timestamp.fromDate(period.expiryDate);
+  const startTs = period.startDate;
+  const expiryTs = period.expiryDate;
+  const now = new Date();
 
   const doc = {
+    _id: newId(),
     licenseKey,
     clientName,
     companyName,
@@ -180,40 +191,36 @@ async function createLicense(payload) {
     productName: payload.productName,
     soldBy: payload.soldBy,
     duration: period.duration,
-    createdAt: Timestamp.now(),
-    updatedAt: Timestamp.now(),
+    createdAt: now,
+    updatedAt: now,
     startDate: startTs,
     expiryDate: expiryTs,
     deactivated: false,
-    // Stored for convenience when browsing Firestore; the API always recomputes.
+    // Stored for convenience when browsing the database; the API always recomputes.
     status: computeStatus(startTs, expiryTs, false),
   };
 
-  const ref = await collection().add(doc);
-  return toPublicLicense(await ref.get(), await clientDirectory());
+  await collection().insertOne(doc);
+  return toPublicLicense(doc, directory);
 }
 
 async function listLicenses() {
-  const [snap, directory] = await Promise.all([
-    collection().orderBy('createdAt', 'desc').get(),
+  const [docs, directory] = await Promise.all([
+    collection().find().sort({ createdAt: -1 }).toArray(),
     clientDirectory(),
   ]);
-  return snap.docs.map((doc) => toPublicLicense(doc, directory));
+  return docs.map((doc) => toPublicLicense(doc, directory));
 }
 
 async function getLicenseById(id) {
-  const doc = await collection().doc(id).get();
-  if (!doc.exists) throw new ApiError(404, 'License not found', 'LICENSE_NOT_FOUND');
-  return toPublicLicense(doc, await clientDirectory());
+  return toPublicLicense(await findOrThrow(id), await clientDirectory());
 }
 
 async function updateLicense(id, payload) {
-  const ref = collection().doc(id);
-  const doc = await ref.get();
-  if (!doc.exists) throw new ApiError(404, 'License not found', 'LICENSE_NOT_FOUND');
+  const doc = await findOrThrow(id);
 
   const current = toPublicLicense(doc, await clientDirectory());
-  const updates = { updatedAt: Timestamp.now() };
+  const updates = { updatedAt: new Date() };
 
   ['clientName', 'companyName', 'clientUserId', 'productName', 'soldBy'].forEach((field) => {
     if (payload[field] !== undefined) updates[field] = payload[field];
@@ -248,16 +255,16 @@ async function updateLicense(id, payload) {
       expiryDate: payload.expiryDate ?? current.expiryDate,
       duration: payload.duration ?? current.duration,
     });
-    updates.startDate = Timestamp.fromDate(period.startDate);
-    updates.expiryDate = Timestamp.fromDate(period.expiryDate);
+    updates.startDate = period.startDate;
+    updates.expiryDate = period.expiryDate;
     updates.duration = period.duration;
     updates.status = computeStatus(updates.startDate, updates.expiryDate, current.deactivated);
   }
 
   // licenseKey is deliberately not updatable — clients already hold it.
 
-  await ref.update(updates);
-  return toPublicLicense(await ref.get(), await clientDirectory());
+  await collection().updateOne({ _id: doc._id }, { $set: updates });
+  return getLicenseById(doc._id);
 }
 
 /**
@@ -266,18 +273,19 @@ async function updateLicense(id, payload) {
  * check without the admin having to delete anything.
  */
 async function setLicenseDeactivated(id, deactivated) {
-  const ref = collection().doc(id);
-  const doc = await ref.get();
-  if (!doc.exists) throw new ApiError(404, 'License not found', 'LICENSE_NOT_FOUND');
+  const data = await findOrThrow(id);
+  await collection().updateOne(
+    { _id: data._id },
+    {
+      $set: {
+        deactivated: Boolean(deactivated),
+        status: computeStatus(data.startDate || data.createdAt, data.expiryDate, Boolean(deactivated)),
+        updatedAt: new Date(),
+      },
+    }
+  );
 
-  const data = doc.data();
-  await ref.update({
-    deactivated: Boolean(deactivated),
-    status: computeStatus(data.startDate || data.createdAt, data.expiryDate, Boolean(deactivated)),
-    updatedAt: Timestamp.now(),
-  });
-
-  return toPublicLicense(await ref.get(), await clientDirectory());
+  return getLicenseById(data._id);
 }
 
 /**
@@ -297,9 +305,8 @@ async function adoptUnlinkedLicenses(clientName, username, companyName) {
   const company = normalizeUserId(companyName);
   if (!name || !user) return 0;
 
-  const snap = await collection().get();
-  const orphans = snap.docs.filter((doc) => {
-    const data = doc.data();
+  const all = await collection().find().toArray();
+  const orphans = all.filter((data) => {
     if (normalizeUserId(data.clientUserId)) return false;
     if (normalizeUserId(data.clientName) !== name) return false;
 
@@ -310,17 +317,18 @@ async function adoptUnlinkedLicenses(clientName, username, companyName) {
     return !licenseCompany || !company || licenseCompany === company;
   });
 
-  await Promise.all(
-    orphans.map((doc) => doc.ref.update({ clientUserId: user, updatedAt: Timestamp.now() }))
-  );
+  if (orphans.length) {
+    await collection().updateMany(
+      { _id: { $in: orphans.map((doc) => doc._id) } },
+      { $set: { clientUserId: user, updatedAt: new Date() } }
+    );
+  }
   return orphans.length;
 }
 
 async function deleteLicense(id) {
-  const ref = collection().doc(id);
-  const doc = await ref.get();
-  if (!doc.exists) throw new ApiError(404, 'License not found', 'LICENSE_NOT_FOUND');
-  await ref.delete();
+  const doc = await findOrThrow(id);
+  await collection().deleteOne({ _id: doc._id });
   return { id };
 }
 
@@ -333,12 +341,10 @@ async function deleteLicense(id) {
  * machine: whoever holds it can use it, on as many installations as they like.
  */
 async function checkLicense({ licenseKey, productName }) {
-  const key = normalizeLicenseKey(licenseKey);
-  const snap = await collection().where('licenseKey', '==', key).limit(1).get();
+  const doc = await findByKey(licenseKey);
 
-  if (snap.empty) return { outcome: 'not_found' };
+  if (!doc) return { outcome: 'not_found' };
 
-  const doc = snap.docs[0];
   const license = toPublicLicense(doc, await clientDirectory());
 
   // Product is checked before dates: a key used in the wrong product should say
@@ -370,8 +376,8 @@ async function recordScreens(license, screens) {
   if (prev && prev.used === next.used && prev.limit === next.limit && prev.plan === next.plan) {
     return license;
   }
-  const updatedAt = Timestamp.now();
-  await collection().doc(license.id).update({ screens: { ...next, updatedAt } });
+  const updatedAt = new Date();
+  await collection().updateOne({ _id: license.id }, { $set: { screens: { ...next, updatedAt } } });
   return { ...license, screens: { ...next, updatedAt: toIso(updatedAt) } };
 }
 
@@ -388,12 +394,10 @@ async function recordScreens(license, screens) {
  * with the Licenses page rather than drifting apart.
  */
 async function updateLicenseContact({ licenseKey, productName, clientName, clientUserId }) {
-  const key = normalizeLicenseKey(licenseKey);
-  const snap = await collection().where('licenseKey', '==', key).limit(1).get();
-  if (snap.empty) throw new ApiError(404, 'Invalid license key', 'LICENSE_NOT_FOUND');
+  const doc = await findByKey(licenseKey);
+  if (!doc) throw new ApiError(404, 'Invalid license key', 'LICENSE_NOT_FOUND');
 
-  const ref = snap.docs[0].ref;
-  const current = toPublicLicense(snap.docs[0], await clientDirectory());
+  const current = toPublicLicense(doc, await clientDirectory());
 
   if (
     productName &&
@@ -408,21 +412,17 @@ async function updateLicenseContact({ licenseKey, productName, clientName, clien
     throw new ApiError(403, `License is ${current.status}`, 'LICENSE_NOT_ACTIVE');
   }
 
-  const updates = { updatedAt: Timestamp.now() };
+  const updates = { updatedAt: new Date() };
   if (clientName !== undefined) updates.clientName = String(clientName).trim();
   if (clientUserId !== undefined) updates.clientUserId = String(clientUserId).trim();
 
   // Keep the linked client account in step, matched on the user id the license
   // had *before* this change.
-  const clients = getDb().collection('clients');
-  const accountSnap = await clients
-    .where('username', '==', normalizeUserId(current.clientUserId))
-    .limit(1)
-    .get();
+  const clients = getCollection('clients');
+  const account = await clients.findOne({ username: normalizeUserId(current.clientUserId) });
 
-  if (!accountSnap.empty) {
-    const account = accountSnap.docs[0];
-    const accountUpdates = { updatedAt: Timestamp.now() };
+  if (account) {
+    const accountUpdates = { updatedAt: new Date() };
 
     if (updates.clientName) accountUpdates.clientName = updates.clientName;
 
@@ -430,18 +430,18 @@ async function updateLicenseContact({ licenseKey, productName, clientName, clien
       const nextUsername = normalizeUserId(updates.clientUserId);
       // The username is how the client signs in to the product, so it still has
       // to be unique even when the product is the one changing it.
-      const clash = await clients.where('username', '==', nextUsername).limit(1).get();
-      if (!clash.empty && clash.docs[0].id !== account.id) {
+      const clash = await clients.findOne({ username: nextUsername }, { projection: { _id: 1 } });
+      if (clash && clash._id !== account._id) {
         throw new ApiError(409, 'That email is already in use', 'EMAIL_TAKEN');
       }
       accountUpdates.username = nextUsername;
     }
 
-    await account.ref.update(accountUpdates);
+    await clients.updateOne({ _id: account._id }, { $set: accountUpdates });
   }
 
-  await ref.update(updates);
-  return toPublicLicense(await ref.get(), await clientDirectory());
+  await collection().updateOne({ _id: doc._id }, { $set: updates });
+  return getLicenseById(doc._id);
 }
 
 /**
@@ -456,16 +456,19 @@ async function relinkClientLicenses(previousUsername, { username, clientName, co
   const previous = normalizeUserId(previousUsername);
   if (!previous) return 0;
 
-  const snap = await collection().get();
-  const mine = snap.docs.filter((doc) => normalizeUserId(doc.data().clientUserId) === previous);
+  const all = await collection().find({}, { projection: { clientUserId: 1 } }).toArray();
+  const mine = all.filter((doc) => normalizeUserId(doc.clientUserId) === previous);
   if (!mine.length) return 0;
 
-  const updates = { updatedAt: Timestamp.now() };
+  const updates = { updatedAt: new Date() };
   if (username !== undefined) updates.clientUserId = normalizeUserId(username);
   if (clientName !== undefined) updates.clientName = String(clientName).trim();
   if (companyName !== undefined) updates.companyName = String(companyName).trim();
 
-  await Promise.all(mine.map((doc) => doc.ref.update(updates)));
+  await collection().updateMany(
+    { _id: { $in: mine.map((doc) => doc._id) } },
+    { $set: updates }
+  );
   return mine.length;
 }
 
@@ -549,5 +552,4 @@ module.exports = {
   listClients,
   computeStatus,
   toPublicLicense,
-  FieldValue,
 };
