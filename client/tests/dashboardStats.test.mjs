@@ -31,6 +31,10 @@ const vite = await createServer({
   server: { middlewareMode: true, hmr: false },
   appType: 'custom',
   logLevel: 'error',
+  // Only the SSR loader is used. Without this, Vite 6 starts pre-bundling the
+  // browser dependencies in the background, and closing the server mid-scan
+  // floods the output with "server is being closed" errors.
+  optimizeDeps: { noDiscovery: true, entries: [] },
 })
 
 try {
