@@ -191,7 +191,7 @@ export default function Help() {
           items={[
             <>
               An admin creates a license here. The server generates a key like{' '}
-              <Code>OPEZ-7K3M-QX9P-2HTD</Code> and calculates the expiry date.
+              <Code>K7M2Q9</Code> and calculates the expiry date.
             </>,
             'The admin emails the key to the client from the license popup.',
             'The client enters the key in the Opezee product on their machine. The product asks the server whether the key is valid.',
@@ -288,8 +288,11 @@ export default function Help() {
             except the key.
           </li>
           <li>
-            <strong>Status:</strong> in the popup, switch an active license to Deactive, or back again. Pending and
-            expired licenses follow their dates, so they can&apos;t be switched.
+            <strong>Status:</strong> open the license and choose <strong>Active</strong> or{' '}
+            <strong>Deactive</strong> in the status dropdown next to the key, then click{' '}
+            <strong>Save Changes</strong>. Picking an option on its own changes nothing. The table only shows the
+            status; it can&apos;t be changed from there. Pending and expired licenses follow their dates, so they
+            can&apos;t be switched.
           </li>
           <li>
             <strong>Machines:</strong> the popup lists every machine using the key, with the dates it was first and
@@ -317,7 +320,7 @@ export default function Help() {
         </p>
         <div className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-950/40 sm:flex-row sm:items-center">
           <span className="self-start rounded-lg border border-brand-500 bg-white px-3 py-2 font-mono text-xs font-semibold text-slate-800 dark:bg-slate-900 dark:text-slate-100 sm:self-center">
-            OPEZ-7K3M-QX9P-2HTD
+            K7M2Q9
           </span>
           <div className="space-y-2">
             <p className="flex flex-wrap items-center gap-2">
@@ -392,7 +395,7 @@ export default function Help() {
         />
         <p>Example request body for verify and sync:</p>
         <pre className="overflow-x-auto rounded-lg bg-slate-900 p-4 font-mono text-xs text-slate-100 dark:bg-slate-950 dark:ring-1 dark:ring-slate-800">
-          {'{"licenseKey":"OPEZ-7K3M-QX9P-2HTD","productName":"River Crossing","machineNumber":"PC-01"}'}
+          {'{"licenseKey":"K7M2Q9","productName":"River Crossing","machineNumber":"PC-01"}'}
         </pre>
         <p>
           Always send <Code>machineNumber</Code> on verify and sync. It counts against the license&apos;s max
