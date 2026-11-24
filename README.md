@@ -24,7 +24,7 @@ Opezee License Management System is a central platform to create, issue and cont
 | Issue license | Create a license for a client and product with an expiry date |
 | Send license | Email the license key to the client |
 | Manage licenses | Edit, change status of, or delete licenses |
-| View dashboard | See license counts and status |
+| View dashboard | Shows summary cards, status and product breakdowns, machine-slot usage, expiring-soon and recently-issued lists |
 
 ### Client
 

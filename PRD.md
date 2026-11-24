@@ -70,8 +70,8 @@ Without a central system, licenses live in spreadsheets and emails. Opezee canno
 
 | ID     | Requirement |
 | ------ | ----------- |
-| DASH-1 | Shows summary cards only: total clients, active licenses, expired licenses and total licenses. There is no license table. |
-| DASH-2 | The sidebar has Dashboard, Licenses, Products and Clients, with Settings pinned at the bottom. |
+| DASH-1 | Shows summary cards, status and product breakdowns, machine-slot usage, expiring-soon and recently-issued lists. Everything is worked out in the browser from the license list, with total clients taken from the stats endpoint. Digital Diya is left out of the machine figures. "Expiring soon" means active and expiring within 60 days. With no licenses, the page shows a single empty state with a "New license" button. |
+| DASH-2 | The sidebar has Dashboard, Licenses, Products, Clients and Help, with Settings pinned at the bottom. |
 
 ### 5.3 Licenses
 

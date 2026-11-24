@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 
 import TableToolbar from '../components/TableToolbar'
 import LicenseTable from '../components/LicenseTable'
@@ -78,6 +79,19 @@ export default function Licenses() {
     setEditing(license)
     setFormOpen(true)
   }
+
+  // /licenses?new=1 (the Dashboard's "New license" button) opens the create
+  // form. The flag is dropped straight away, so a refresh or Back does not
+  // open it a second time.
+  const [searchParams, setSearchParams] = useSearchParams()
+  useEffect(() => {
+    if (searchParams.get('new') !== '1') return
+    openCreate()
+    const next = new URLSearchParams(searchParams)
+    next.delete('new')
+    setSearchParams(next, { replace: true })
+    // openCreate only sets state, so it is safe to leave out of the deps.
+  }, [searchParams, setSearchParams])
 
   const closeForm = () => {
     setFormOpen(false)

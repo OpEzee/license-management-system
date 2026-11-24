@@ -12,6 +12,14 @@ export function formatDate(value) {
   return `${String(d.getUTCDate()).padStart(2, '0')} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`
 }
 
+/** "20 Nov" — for short lists where the year is obvious. UTC, like formatDate. */
+export function formatShortDate(value) {
+  if (!value) return '-'
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return '-'
+  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`
+}
+
 /** "23-09-2027" — the product-facing details page, as products print it. */
 export function formatDateNumeric(value) {
   if (!value) return '-'
