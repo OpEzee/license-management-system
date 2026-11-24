@@ -308,9 +308,6 @@ export default function LicenseFormModal({
                 }
                 onChange={(next) => setDeactivated(next === 'deactivated')}
               />
-              {/* <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
-                Created {formatDate(license.createdAt)}
-              </p> */}
             </div>
           </div>
         )}

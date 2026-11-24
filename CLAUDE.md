@@ -90,4 +90,4 @@ This is the admin dashboard (React 18 + Vite + Tailwind) and license API (Expres
 ## Current priorities
 
 1. Build the Clients page (`client/src/pages/Clients.jsx`, its route and sidebar entry). The backend `/api/clients` CRUD already exists.
-2. Repo clean-up: remove `feedback.txt` (it belongs to another project) and correct the README's list of public endpoints.
+2. README: add the setup steps, the environment variable table and an API reference listing every endpoint, public and admin. `feedback.txt` is already gone, and the old auth section with its incomplete endpoint list was removed.

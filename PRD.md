@@ -155,10 +155,10 @@ Without a central system, licenses live in spreadsheets and emails. Opezee canno
 | #  | Item | Notes |
 | -- | ---- | ----- |
 | G1 | **There is no Clients page in the dashboard.** | The README, sidebar requirement (DASH-2) and hooks expect `client/src/pages/Clients.jsx`, but neither the file nor its `/clients` route in `App.jsx` exists. The backend endpoints are already in place. |
-| G2 | `feedback.txt` belongs to the "Light a Lamp" project. | Move it to that repo or delete it. |
+| G2 | ~~`feedback.txt` belongs to the "Light a Lamp" project.~~ | Done: the file is no longer in the repo. |
 | G3 | ~~`.claude/launch.json` points at a `frontend/` folder that does not exist.~~ | Done: it now runs `npm run dev` at the root. |
-| G4 | The README's auth section lists only 3 public endpoints. | `/licenses/poc` and `/licenses/email` are public too. |
-| G5 | The README mentions an `example-game/` folder that is not in the repo. | Add the folder or remove the reference. |
+| G4 | ~~The README's auth section lists only 3 public endpoints.~~ | Done: that section was removed from the README. A full API reference is still to be written (ROADMAP Pending #8). |
+| G5 | ~~The README mentions an `example-game/` folder that is not in the repo.~~ | Done: the README no longer refers to it. |
 | G6 | ~~Machine lock reset.~~ | Done: max screens per license, with a Release action per machine (§5.8). |
 | G7 | Audit log. | Nothing records who changed or deactivated a license, or when. |
 | G8 | Expiry reminders. | The system does not email clients before their license expires. |
@@ -178,5 +178,5 @@ Without a central system, licenses live in spreadsheets and emails. Opezee canno
 | 2 | Email sharing, branding, one-machine lock (later removed), POC self-service, Render deploy | Done |
 | 3 | Firestore → MongoDB migration: data layer on the `mongodb` driver, backup and restore scripts | Done |
 | 4 | Max screens per license with admin release (G6), and the `set-max-screens` migration | Done |
-| 5 | Clients page (G1), repo clean-up (G2, G4, G5), CI with a MongoDB service | Next |
+| 5 | Clients page (G1) and a README API reference. Done in this phase: repo clean-up (G2, G4, G5) and CI with a MongoDB service | Next |
 | 6 | Audit log (G7), expiry reminders (G8) | Planned |

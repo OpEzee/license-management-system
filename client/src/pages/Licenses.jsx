@@ -190,9 +190,6 @@ export default function Licenses() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="page-title">Licenses</h1>
-          {/* <p className="page-subtitle">
-            Create, review and revoke the license keys issued to your clients.
-          </p> */}
         </div>
         <button className="btn-primary" onClick={openCreate}>
           <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">

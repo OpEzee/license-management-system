@@ -237,7 +237,6 @@ export default function Products() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="page-title">Products</h1>
-          {/* <p className="page-subtitle">The products you issue licenses for.</p> */}
         </div>
         <button className="btn-primary" onClick={openCreate}>
           <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">

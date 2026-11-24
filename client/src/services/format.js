@@ -38,12 +38,6 @@ export function toDateInput(value) {
   return d.toISOString().slice(0, 10)
 }
 
-export function daysUntil(value) {
-  if (!value) return null
-  const diff = new Date(value).getTime() - Date.now()
-  return Math.ceil(diff / 86400000)
-}
-
 /**
  * Predefined license durations. These mirror server/utils/licenseDates.js —
  * the frontend only previews the expiry date; the backend computes the value
@@ -56,10 +50,6 @@ export const DURATIONS = [
   { value: '1_year', label: '1 Year', months: 12 },
   { value: 'custom', label: 'Custom Date', months: null },
 ]
-
-export function durationLabel(value) {
-  return DURATIONS.find((d) => d.value === value)?.label || 'Custom Date'
-}
 
 /** Mirrors the backend's month arithmetic, clamping 31 Jan + 1 month to 28 Feb. */
 export function addMonthsUtc(dateInput, months) {

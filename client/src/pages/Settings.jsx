@@ -5,7 +5,6 @@ import ConfirmDialog from '../components/ConfirmDialog'
 import Modal from '../components/Modal'
 import IconButton, { ACTION_ICONS } from '../components/IconButton'
 import { useToast } from '../components/Toast'
-import { useAuth } from '../context/AuthContext'
 import { useBranding } from '../context/BrandingContext'
 import { authApi, brandingApi, emailApi } from '../services/api'
 
@@ -221,11 +220,6 @@ function BrandingSettings() {
           </div>
         )}
       </div>
-
-      {/* <p className="text-xs text-slate-500 dark:text-slate-400">
-        PNG, JPEG, WebP or SVG, up to 500 KB. Stored in the database and applied across the console
-        immediately — no redeploy needed.
-      </p> */}
     </div>
   )
 }
@@ -421,9 +415,6 @@ function EmailFormModal({ open, item, onClose, onSubmit }) {
               <span className="block text-sm font-medium text-slate-800 dark:text-slate-200">
                 Mark as default
               </span>
-              {/* <span className="block text-xs text-slate-500 dark:text-slate-400">
-                More than one address can be a default.
-              </span> */}
             </span>
           </label>
         </div>
@@ -661,16 +652,12 @@ function EmailConfiguration() {
 }
 
 export default function Settings() {
-  const { admin } = useAuth()
 
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="page-title">Settings</h1>
-          {/* <p className="page-subtitle">
-            Signed in as {admin?.email}. Manage appearance, security and email configuration.
-          </p> */}
         </div>
         {/* Theme switch lives here rather than in a card of its own. */}
         <ThemePillSwitch />

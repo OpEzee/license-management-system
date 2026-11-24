@@ -644,51 +644,6 @@ async function getStats() {
   };
 }
 
-/**
- * Clients are derived from licenses rather than stored separately, so they can
- * never drift out of sync with the licenses that define them.
- */
-async function listClients() {
-  const licenses = await listLicenses();
-  const byClient = new Map();
-
-  licenses.forEach((license) => {
-    const key = (license.clientUserId || '').toLowerCase();
-    if (!byClient.has(key)) {
-      byClient.set(key, {
-        clientUserId: license.clientUserId,
-        clientName: license.clientName,
-        companyName: license.companyName,
-        products: [],
-        totalLicenses: 0,
-        activeLicenses: 0,
-        expiredLicenses: 0,
-        pendingLicenses: 0,
-        deactivatedLicenses: 0,
-        latestExpiry: null,
-      });
-    }
-
-    const client = byClient.get(key);
-    client.totalLicenses += 1;
-    if (license.status === 'active') client.activeLicenses += 1;
-    else if (license.status === 'pending') client.pendingLicenses += 1;
-    else if (license.status === 'deactivated') client.deactivatedLicenses += 1;
-    else client.expiredLicenses += 1;
-
-    if (license.productName && !client.products.includes(license.productName)) {
-      client.products.push(license.productName);
-    }
-    if (!client.latestExpiry || license.expiryDate > client.latestExpiry) {
-      client.latestExpiry = license.expiryDate;
-    }
-  });
-
-  return [...byClient.values()].sort((a, b) =>
-    (a.clientName || '').localeCompare(b.clientName || '')
-  );
-}
-
 module.exports = {
   COLLECTION,
   createLicense,
@@ -709,7 +664,6 @@ module.exports = {
   recordScreens,
   updateLicenseContact,
   getStats,
-  listClients,
   computeStatus,
   toPublicLicense,
   // Exported for the test that proves the single lookup answers like the full one.
