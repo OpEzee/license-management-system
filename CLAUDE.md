@@ -8,7 +8,7 @@ Claude Code reads this file at the start of every session in this repo. It holds
 
 ## Project in one line
 
-This is the admin dashboard (React 18 + Vite + Tailwind) and license API (Express 4 + MongoDB) that Opezee uses to issue licenses for its products. Products call public endpoints to verify a license and re-sync it every hour. Each license is locked to one machine.
+This is the admin dashboard (React 18 + Vite + Tailwind) and license API (Express 4 + MongoDB) that Opezee uses to issue licenses for its products. Products call public endpoints to verify a license and re-sync it every hour. Each license runs on at most its `maxScreens` machines (1–100, default 1).
 
 ## Environment
 
@@ -32,6 +32,7 @@ This is the admin dashboard (React 18 + Vite + Tailwind) and license API (Expres
 | Back up the database | `npm run backup-db` (writes `backups/mongodb-<timestamp>/`, git-ignored) |
 | Restore the newest backup | `npm run restore-db` |
 | Restore a specific backup | `npm run restore-db -- <folder>` |
+| Give existing licenses a max-screens limit | `npm run set-max-screens -- --min <n>` (add `--dry-run` to preview). Run it once before deploying max screens. |
 | Run in Docker | `docker build -t opezee-lms .` then `docker run --env-file .env -p 5000:5000 opezee-lms`. `MONGODB_URI` must reach MongoDB from inside the container: use `host.docker.internal`, not `127.0.0.1`. |
 
 **Definition of done:** `npm test` passes, `npm run build` succeeds, and `README.md` / `PRD.md` are updated if behaviour or scope changed.
@@ -55,7 +56,7 @@ This is the admin dashboard (React 18 + Vite + Tailwind) and license API (Expres
    - status is always derived with `computeStatus()`
    - the server calculates expiry dates
    - license keys come only from `generateLicenseKey.js` and cannot be edited
-   - the machine lock: a missing or different machine number means `machine_mismatch`
+   - max screens per license: on `/verify` and `/sync`, a new machine beyond `maxScreens` gets `403 SCREEN_LIMIT_REACHED`, and once any slot is claimed, a missing machine number gets `403 MACHINE_NUMBER_REQUIRED`. Slots are claimed only through `admitMachine()`, as one atomic `findOneAndUpdate` with the size check in its filter, never as a read followed by a write. Don't confuse this with `screens`, which Digital Diya reports itself.
    - wrong-email and wrong-password logins return the same error
 6. Keep the legacy-field fallbacks in `toPublicLicense()` (`clientEmail` and `createdAt`).
 
@@ -90,4 +91,3 @@ This is the admin dashboard (React 18 + Vite + Tailwind) and license API (Expres
 
 1. Build the Clients page (`client/src/pages/Clients.jsx`, its route and sidebar entry). The backend `/api/clients` CRUD already exists.
 2. Repo clean-up: remove `feedback.txt` (it belongs to another project) and correct the README's list of public endpoints.
-3. Add an admin action that releases a license's machine lock.

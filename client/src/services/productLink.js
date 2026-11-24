@@ -13,6 +13,11 @@
  *   /client/pin       ?product=&key=&theme=
  *                     (the staff PIN, CLIENT_PIN on the server; right → /client/details)
  *
+ *   Every page also takes &machine=, the product's machine number. Activate,
+ *   status and details send it to /verify or /sync, where it counts against
+ *   the license's max screens. Once a key has claimed machines, a page opened
+ *   without it is refused (403 MACHINE_NUMBER_REQUIRED), so products must pass it.
+ *
  * Every message is { source: 'opezee-licence', type, ...payload }:
  *
  *   ready        the page has loaded (the product's cue that the server is up)
@@ -31,7 +36,7 @@
 
 export const MESSAGE_SOURCE = 'opezee-licence'
 
-const CARRIED = ['product', 'key', 'email', 'poc', 'company', 'status', 'signout', 'theme']
+const CARRIED = ['product', 'key', 'email', 'poc', 'company', 'status', 'signout', 'theme', 'machine']
 
 /** The server's own rules, mirrored so a bad value is caught before a request. */
 // A key in either format, after normalizeKey (below).
@@ -53,6 +58,7 @@ export function readParams(search = window.location.search) {
     signout: get('signout'),
     theme: get('theme'),
     error: get('error'),
+    machine: get('machine'),
   }
 }
 

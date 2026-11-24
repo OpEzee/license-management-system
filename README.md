@@ -37,7 +37,7 @@ Opezee License Management System is a central platform to create, issue and cont
 
 | Use Case | Description |
 | --- | --- |
-| Verify license | Check the license key is valid before use |
+| Verify license | Check the license key is valid before use, sending its machine number so it counts against the license's max screens |
 | Re-check license | Re-validate the license periodically |
 
 ## Project Flow
@@ -64,6 +64,17 @@ flowchart TD
 6. Product verifies the license — valid keys unlock the product, invalid or expired keys are blocked.
 7. Product re-checks the license periodically while in use.
 
+## Max screens per license
+
+Each license has **max screens**: how many machines can use the key, from 1 to 100, set by the admin (1 by default).
+
+- Products send `machineNumber` with `POST /api/licenses/verify` and `POST /api/licenses/sync`. A product that shows the hosted `/client` pages passes it in their URL as `&machine=`. The first *max screens* distinct machines claim a slot, and a machine that holds a slot is always accepted.
+- When every slot is taken, a new machine gets `403` with `valid: false` and `code: "SCREEN_LIMIT_REACHED"`.
+- Once any slot is claimed, a request with no machine number gets `403` with `code: "MACHINE_NUMBER_REQUIRED"`.
+- Machine numbers are compared trimmed and case-insensitively. They may contain letters, digits and `. _ : -`, up to 128 characters.
+- In the dashboard, the license popup lists the machines in use. **Release** frees one, for example when hardware is replaced. The same action is available as `DELETE /api/licenses/:id/machines/:machineNumber` (admin token). Max screens cannot be lowered below the machines in use.
+- Digital Diya keys are not limited this way: Digital Diya reports its own screens, shown in the Screens column.
+
 ## Database
 
 Data is stored in **MongoDB** (it previously lived in Firebase Firestore). By default the
@@ -75,6 +86,7 @@ server connects to a local MongoDB at `mongodb://127.0.0.1:27017`, database
 | `npm run backup-db` | Exports every collection to `backups/mongodb-<timestamp>/` as JSON |
 | `npm run restore-db` | Loads the newest backup folder into MongoDB (upserts by id, safe to re-run) |
 | `npm run restore-db -- <folder>` | Loads a specific backup folder |
+| `npm run set-max-screens -- --min <n>` | One-off migration before deploying max screens. Gives every license without a limit `max(n, machines it already has)`. Add `--dry-run` to preview. Safe to re-run |
 | `npm run create-admin` | Creates or resets the dashboard admin login |
 | `npm test` | Runs the API tests against a throwaway database on the local MongoDB |
 

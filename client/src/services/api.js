@@ -89,6 +89,11 @@ export const licenseApi = {
   setStatus: (id, deactivated) =>
     client.put(`/licenses/${id}/status`, { deactivated }).then((r) => r.data.license),
   remove: (id) => client.delete(`/licenses/${id}`).then((r) => r.data),
+  // Frees one of the license's machine slots; resolves to the updated license.
+  releaseMachine: (id, machineNumber) =>
+    client
+      .delete(`/licenses/${id}/machines/${encodeURIComponent(machineNumber)}`)
+      .then((r) => r.data.license),
   verify: (payload) => client.post('/licenses/verify', payload).then((r) => r.data),
 }
 

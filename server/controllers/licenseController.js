@@ -48,6 +48,8 @@ const getOne = asyncHandler(async (req, res) => {
 });
 
 const update = asyncHandler(async (req, res) => {
+  // Before the POC account is saved, so a refused limit changes nothing.
+  await licenseService.assertMaxScreensFits(req.params.id, req.body.maxScreens);
   if (req.body.password) {
     const current = await licenseService.getLicenseById(req.params.id);
     await savePocFrom(req.body, current.clientUserId, req.params.id);
@@ -96,6 +98,35 @@ const remove = asyncHandler(async (req, res) => {
   await licenseService.deleteLicense(req.params.id);
   res.json({ success: true, message: 'License deleted successfully' });
 });
+
+/** Frees a machine's slot, for when a client replaces hardware. */
+const releaseMachine = asyncHandler(async (req, res) => {
+  const license = await licenseService.releaseMachine(req.params.id, req.params.machineNumber);
+  res.json({ success: true, message: 'Machine released', license });
+});
+
+/**
+ * The machine limit, for /verify and /sync only. Returns null when the machine
+ * may use the key, or the refusal to send: 403 with valid:false and a code the
+ * product can show a specific message for.
+ */
+async function machineRefusal(license, machineNumber) {
+  const outcome = await licenseService.admitMachine(license, machineNumber);
+  if (outcome === 'admitted') return null;
+
+  if (outcome === 'machine_required') {
+    return {
+      code: 'MACHINE_NUMBER_REQUIRED',
+      message: 'This license is registered to specific machines. The product must send its machine number.',
+    };
+  }
+
+  const n = license.maxScreens;
+  return {
+    code: 'SCREEN_LIMIT_REACHED',
+    message: `All ${n} ${n === 1 ? 'machine' : 'machines'} allowed for this license are in use. Ask your administrator to release one.`,
+  };
+}
 
 /**
  * Public endpoint used by the product. Response shapes are fixed by contract,
@@ -164,6 +195,11 @@ const verify = asyncHandler(async (req, res) => {
         status: 'pending',
       },
     });
+  }
+
+  const refusal = await machineRefusal(result.license, req.body.machineNumber);
+  if (refusal) {
+    return res.status(403).json({ success: false, valid: false, ...refusal });
   }
 
   return res.status(200).json({
@@ -382,6 +418,19 @@ const sync = asyncHandler(async (req, res) => {
     deactivated: 'License has been deactivated',
   };
 
+  if (result.outcome === 'valid') {
+    const refusal = await machineRefusal(result.license, req.body.machineNumber);
+    if (refusal) {
+      return res.status(403).json({
+        success: false,
+        valid: false,
+        status: 'invalid',
+        ...refusal,
+        checkedAt,
+      });
+    }
+  }
+
   return res.status(200).json({
     success: true,
     valid: result.outcome === 'valid',
@@ -454,6 +503,7 @@ module.exports = {
   share,
   mailStatus,
   remove,
+  releaseMachine,
   verify,
   validateDigitalDiya,
   syncDigitalDiya,

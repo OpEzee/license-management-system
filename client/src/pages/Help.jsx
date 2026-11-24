@@ -9,7 +9,7 @@ const SECTIONS = [
   { id: 'lifecycle', label: "A license's life" },
   { id: 'issuing', label: 'Issuing a license' },
   { id: 'managing', label: 'Managing licenses' },
-  { id: 'machine-lock', label: 'One machine per license' },
+  { id: 'max-screens', label: 'Max screens per license' },
   { id: 'products', label: 'Products & clients' },
   { id: 'settings', label: 'Settings' },
   { id: 'integration', label: 'For developers' },
@@ -195,7 +195,7 @@ export default function Help() {
             </>,
             'The admin emails the key to the client from the license popup.',
             'The client enters the key in the Opezee product on their machine. The product asks the server whether the key is valid.',
-            'The first machine to use the key claims it. From then on, only that machine is accepted.',
+            'Each machine that uses the key claims one of its slots, up to the license’s max screens (1 by default). When every slot is taken, a new machine is refused.',
             'Every hour the product checks again. When a license expires or is switched off, the product locks on its next check.',
           ]}
         />
@@ -269,6 +269,10 @@ export default function Help() {
               or <strong>1 Year</strong> fills in the expiry date for you. <strong>Custom Date</strong> lets you
               set it yourself, and it must be after the start date.
             </>,
+            <>
+              Set <strong>Max screens</strong>: how many machines can use this key, from 1 to 100 (1 by default).
+              Digital Diya licenses don&apos;t have this field, because Digital Diya counts its own screens.
+            </>,
             'Save.',
           ]}
         />
@@ -288,6 +292,12 @@ export default function Help() {
             expired licenses follow their dates, so they can&apos;t be switched.
           </li>
           <li>
+            <strong>Machines:</strong> the popup lists every machine using the key, with the dates it was first and
+            last seen. <strong>Release</strong> frees that machine&apos;s slot, for example when a client replaces
+            hardware, and asks for confirmation first. The <strong>Machines</strong> column in the table shows how
+            many are in use, such as 2/3.
+          </li>
+          <li>
             <strong>Delete</strong> asks for confirmation first, and can&apos;t be undone.
           </li>
           <li>
@@ -298,11 +308,12 @@ export default function Help() {
         </ul>
       </Section>
 
-      <Section id="machine-lock" title="One machine per license">
+      <Section id="max-screens" title="Max screens per license">
         <p>
-          A license works on one machine only. The first machine that checks the key claims it, and the server
-          remembers that machine&apos;s number. After that, the same key used on any other machine is refused, even
-          though the key itself is correct.
+          Each license has a <strong>max screens</strong> number: how many machines can use the key, from 1 to 100.
+          Each machine that checks the key claims a slot, and the server remembers its machine number. A machine
+          that already holds a slot is always accepted. Once every slot is taken, the key is refused on any new
+          machine, even though the key itself is correct. In the example below, max screens is 2:
         </p>
         <div className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-950/40 sm:flex-row sm:items-center">
           <span className="self-start rounded-lg border border-brand-500 bg-white px-3 py-2 font-mono text-xs font-semibold text-slate-800 dark:bg-slate-900 dark:text-slate-100 sm:self-center">
@@ -319,13 +330,33 @@ export default function Help() {
             <p className="flex flex-wrap items-center gap-2">
               <span className={ARROW} aria-hidden="true">→</span>
               <span className="font-medium text-slate-900 dark:text-white">Machine B</span>
+              <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
+                claimed ✓
+              </span>
+            </p>
+            <p className="flex flex-wrap items-center gap-2">
+              <span className={ARROW} aria-hidden="true">→</span>
+              <span className="font-medium text-slate-900 dark:text-white">Machine C</span>
               <span className="rounded-full bg-red-50 px-2.5 py-0.5 text-xs font-semibold text-red-700 dark:bg-red-500/10 dark:text-red-400">
-                refused ✗ machine mismatch
+                refused ✗ all screens in use
               </span>
             </p>
           </div>
         </div>
-        <p>Once a key is claimed, a request with no machine number at all is refused too.</p>
+        <ul className="list-disc space-y-2 pl-5">
+          <li>
+            To move a key to new hardware, open the license and <strong>Release</strong> the old machine. The next
+            machine to check the key takes the freed slot.
+          </li>
+          <li>
+            Max screens can&apos;t be lowered below the number of machines in use. Release machines first.
+          </li>
+          <li>
+            Once any machine has claimed a slot, a check that sends no machine number is refused, so products must
+            always send theirs.
+          </li>
+          <li>Machine numbers ignore capital letters and spaces at either end.</li>
+        </ul>
       </Section>
 
       <Section id="products" title="Products & clients">
@@ -364,6 +395,12 @@ export default function Help() {
           {'{"licenseKey":"OPEZ-7K3M-QX9P-2HTD","productName":"River Crossing","machineNumber":"PC-01"}'}
         </pre>
         <p>
+          Always send <Code>machineNumber</Code> on verify and sync. It counts against the license&apos;s max
+          screens, and it may contain letters, digits and <Code>. _ : -</Code>, up to 128 characters. A product
+          that shows the hosted <Code>/client</Code> pages passes the same value in their URL as{' '}
+          <Code>&amp;machine=</Code>.
+        </p>
+        <p>
           A product must lock itself whenever the response has <Code>&quot;valid&quot;: false</Code>. Verify and
           sync allow 20 requests per minute per IP. Client sign-in allows 30 failed attempts per 15 minutes per IP.
         </p>
@@ -382,8 +419,12 @@ export default function Help() {
               'The license names a different product. Edit the product name on the license.',
             ],
             [
-              <>403 · In use on another machine</>,
-              'Another machine has claimed the key. The client must use the original machine (there is no reset button yet).',
+              <>403 · SCREEN_LIMIT_REACHED</>,
+              'Every machine slot on the key is taken. Open the license and Release a machine the client no longer uses, or raise Max screens.',
+            ],
+            [
+              <>403 · MACHINE_NUMBER_REQUIRED</>,
+              'The key already has machines registered, but the product sent no machine number. Update the product so it sends machineNumber.',
             ],
             [<>valid: false · expired</>, "Renew it by editing the license's dates."],
             [<>valid: false · pending</>, "The start date hasn't arrived yet."],

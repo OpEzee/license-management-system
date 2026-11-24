@@ -19,13 +19,15 @@ const COLUMNS = [
   'clientUserId',
   'productName',
   'soldBy',
+  'machines',
   'startDate',
   'expiryDate',
   'status',
 ]
 
 // Digital Diya's own view: no dates, and the screens each key runs on instead
-// (out of what its Digital Diya plan allows, as reported on sync).
+// (out of what its Digital Diya plan allows, as reported on sync). No machines
+// column: Digital Diya does not send machine numbers, so it claims no slots.
 const DIGITAL_DIYA_COLUMNS = [
   'clientName',
   'licenseKey',
@@ -100,6 +102,20 @@ export default function Licenses() {
       await Promise.all([reload({ silent: true }), reloadClients({ silent: true })])
     } catch (err) {
       toast.error(err.message)
+    }
+  }
+
+  // The popup stays open on its own copy of the machines; only the table is
+  // refreshed, so unsaved edits in the form survive a release.
+  const handleReleaseMachine = async (machineNumber) => {
+    try {
+      const updated = await licenseApi.releaseMachine(editing.id, machineNumber)
+      toast.success(`${machineNumber} released`)
+      await reload({ silent: true })
+      return updated
+    } catch (err) {
+      toast.error(err.message)
+      return null
     }
   }
 
@@ -203,6 +219,7 @@ export default function Licenses() {
         clients={clients}
         onClose={closeForm}
         onSubmit={handleSubmit}
+        onReleaseMachine={handleReleaseMachine}
       />
 
       <ConfirmDialog

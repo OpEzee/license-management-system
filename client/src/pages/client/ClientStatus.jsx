@@ -49,6 +49,7 @@ export default function ClientStatus() {
       const data = await productClientApi.sync({
         licenseKey: params.key,
         productName: params.product || undefined,
+        machineNumber: params.machine || undefined,
       })
       setResult(data)
       if (data.valid && !told.current) {
@@ -58,12 +59,14 @@ export default function ClientStatus() {
         }
       }
     } catch (err) {
-      // 404: the key has gone. 403: it belongs to another product.
+      // 404: the key has gone. 403: it belongs to another product, or every
+      // one of its machine slots is taken (or this page was opened without
+      // &machine= on a key that has claimed machines).
       if (err.status === 404 || err.status === 403) {
         setResult({ valid: false, status: 'invalid', message: err.message })
       } else setError(err.message)
     }
-  }, [params.key, params.product])
+  }, [params.key, params.product, params.machine])
 
   useEffect(() => {
     check()

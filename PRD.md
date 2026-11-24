@@ -11,7 +11,7 @@
 
 ## 1. Summary
 
-Opezee sells software products (kiosk apps, games, showcase apps) that run on client hardware. The LMS is where Opezee issues, tracks and revokes licenses for those products. It also gives each product a small public API so it can check, on launch and every hour, that its key is still valid on that machine.
+Opezee sells software products (kiosk apps, games, showcase apps) that run on client hardware. The LMS is where Opezee issues, tracks and revokes licenses for those products. It also gives each product a small public API so it can check, on launch and every hour, that its key is still valid and that the machine it runs on is one of the key's allowed screens.
 
 It is one deployable service with three parts (see `ARCHITECTURE.md` for how they fit together):
 
@@ -24,7 +24,7 @@ It is one deployable service with three parts (see `ARCHITECTURE.md` for how the
 Without a central system, licenses live in spreadsheets and emails. Opezee cannot:
 
 - tell which client has which product, or when it expires
-- stop one key being installed on several machines
+- stop one key being installed on more machines than the client paid for
 - switch off a product remotely when a client stops paying
 - send a client their key in a consistent, branded format
 
@@ -34,7 +34,7 @@ Without a central system, licenses live in spreadsheets and emails. Opezee canno
 
 1. An admin can issue a license in under a minute, with the expiry worked out from a preset duration.
 2. A product can check its key with one HTTP call and needs no admin credentials.
-3. Each license is locked to the first machine that uses it.
+3. Each license runs on at most its **max screens**: a number of machines from 1 to 100 that the admin sets, 1 by default. The first machines to verify the key claim the slots.
 4. Deactivating or expiring a license takes effect on the product's next hourly sync.
 5. The whole system deploys as one service on one URL.
 
@@ -43,7 +43,7 @@ Without a central system, licenses live in spreadsheets and emails. Opezee canno
 - Payments, invoicing or a client-facing self-service portal.
 - Several admin roles or permission levels. There is a single admin role.
 - Offline license files or cryptographically signed tokens. Products check online.
-- Usage metering or seat counts above one machine per license.
+- Usage metering or billing per machine. Max screens caps how many machines can use a key. It does not meter or bill them.
 
 ## 4. Users
 
@@ -77,9 +77,9 @@ Without a central system, licenses live in spreadsheets and emails. Opezee canno
 
 | ID    | Requirement |
 | ----- | ----------- |
-| LIC-1 | The table has these columns: license key, client name, user name, product, sold by, start date, expiry date, status and actions. |
+| LIC-1 | The table has these columns: license key, client name, user name, product, sold by, machines (in use out of max screens, shown as "X/N"), start date, expiry date, status and actions. The Digital Diya view has no Machines column, because it shows the screens Digital Diya reports itself. |
 | LIC-2 | The actions column has **View** and **Delete** icons only. View opens an editable popup. Delete asks for confirmation first. |
-| LIC-3 | The create/edit form has: client user ID, client name, company, product, sold by, start date and duration. |
+| LIC-3 | The create/edit form has: client user ID, client name, company, product, sold by, start date, duration and max screens. Max screens is hidden for Digital Diya. |
 | LIC-4 | Duration is one of `1_month`, `3_months`, `6_months`, `1_year` or `custom`. For the presets the server calculates the expiry and the field is read-only. For `custom` the admin sets the expiry, which must be after the start date. |
 | LIC-5 | The server generates license keys with a CSPRNG in the format `PREFIX-XXXX-XXXX-XXXX`. The alphabet excludes `I L O U 0 1`. Keys are unique and can never be edited. |
 | LIC-6 | Status is always derived when read, never trusted from storage. It is one of `pending` (starts in the future), `active`, `expired` or `deactivated` (switched off by the admin, which overrides the dates). |
@@ -116,19 +116,24 @@ Without a central system, licenses live in spreadsheets and emails. Opezee canno
 
 | ID    | Endpoint | Requirement |
 | ----- | -------- | ----------- |
-| API-1 | `POST /api/licenses/verify` | Checks a key on demand. Input: `licenseKey`, optional `productName`, `machineNumber`. Returns `valid` plus the reason: not found (404), product mismatch (403), machine mismatch (403), deactivated, expired or pending. |
-| API-2 | `POST /api/licenses/sync` | Same check, called by the product every hour. A product must lock itself when `valid` is false. |
+| API-1 | `POST /api/licenses/verify` | Checks a key on demand. Input: `licenseKey`, optional `productName`, `machineNumber`. Returns `valid` plus the reason: not found (404), product mismatch (403), screen limit reached (403 `SCREEN_LIMIT_REACHED`), machine number required (403 `MACHINE_NUMBER_REQUIRED`), deactivated, expired or pending. |
+| API-2 | `POST /api/licenses/sync` | The same check, including the max-screens rules in §5.8, called by the product every hour. A product must lock itself when `valid` is false. |
 | API-3 | `POST /api/clients/login` | Checks a client's username and password, optionally for one product. Limited to 30 attempts per 15 minutes per IP. |
-| API-4 | `PUT /api/licenses/poc`, `PUT /api/licenses/email` | Let the product update its own POC name or email. The key plus the claimed machine number act as the credential. Only allowed while the license is active. |
+| API-4 | `PUT /api/licenses/poc`, `PUT /api/licenses/email` | Let the product update its own POC name or email. The key alone acts as the credential. These endpoints neither check nor claim a machine slot. Only allowed while the license is active. |
 | API-5 | — | Verify, sync, poc and email are limited to 20 requests per minute per IP. They allow CORS from any origin. |
 
-### 5.8 One machine per license
+### 5.8 Max screens per license
 
-| ID     | Requirement |
-| ------ | ----------- |
-| LOCK-1 | The first successful verify that sends a `machineNumber` claims the license for that machine. |
-| LOCK-2 | After that, any request with a different machine number, or none, gets `machine_mismatch`. |
-| LOCK-3 | Machine numbers are compared case-insensitively. They may contain `A–Z a–z 0–9 . _ : -` and are at most 128 characters. |
+| ID        | Requirement |
+| --------- | ----------- |
+| SCREENS-1 | Each license has `maxScreens`: a whole number from 1 to 100 that the admin sets. New licenses default to 1. |
+| SCREENS-2 | The first `maxScreens` distinct machines that verify or sync the key claim a slot. A machine that holds a slot is always accepted, and its last-seen time is updated on every successful check. |
+| SCREENS-3 | When every slot is taken, a new machine gets `403` with `valid: false` and code `SCREEN_LIMIT_REACHED`. Slots are claimed atomically, so machines checking at the same moment can never go over the limit. |
+| SCREENS-4 | Once a license has any claimed slot, a request with no `machineNumber` gets `403` with code `MACHINE_NUMBER_REQUIRED`. Before then, such a request is accepted and claims nothing. Products must therefore send `machineNumber`. |
+| SCREENS-5 | Machine numbers are compared trimmed and case-insensitively. They may contain `A–Z a–z 0–9 . _ : -` and are at most 128 characters. |
+| SCREENS-6 | Only `/verify` and `/sync` enforce the limit. A key that is expired, pending or deactivated claims no slot. Digital Diya's endpoints, the PIN details, `/poc` and `/email` are not limited. |
+| SCREENS-7 | The admin sees each claimed machine, with its first-seen and last-seen dates, in the License Details popup, and can release one (`DELETE /api/licenses/:id/machines/:machineNumber`) after a confirmation, for example when a client replaces hardware. Lowering `maxScreens` below the machines claimed is refused with "Release machines first". |
+| SCREENS-8 | Licenses that existed before max screens are migrated with `npm run set-max-screens -- --min <n>`. Each gets `max(n, machines already claimed)`, and the machine left over from the old one-machine lock keeps its slot. |
 
 ## 6. Non-functional requirements
 
@@ -152,14 +157,14 @@ Without a central system, licenses live in spreadsheets and emails. Opezee canno
 | G3 | ~~`.claude/launch.json` points at a `frontend/` folder that does not exist.~~ | Done: it now runs `npm run dev` at the root. |
 | G4 | The README's auth section lists only 3 public endpoints. | `/licenses/poc` and `/licenses/email` are public too. |
 | G5 | The README mentions an `example-game/` folder that is not in the repo. | Add the folder or remove the reference. |
-| G6 | Machine lock reset. | There is no admin action to release a machine claim, for example when a client replaces hardware. |
+| G6 | ~~Machine lock reset.~~ | Done: max screens per license, with a Release action per machine (§5.8). |
 | G7 | Audit log. | Nothing records who changed or deactivated a license, or when. |
 | G8 | Expiry reminders. | The system does not email clients before their license expires. |
 
 ## 8. Success metrics
 
 - Every active Opezee installation is covered by a license in the LMS.
-- Zero cases of one key running on more than one machine.
+- Zero cases of one key running on more machines than its max screens.
 - A deactivation takes effect on the product within 1 hour.
 - An admin can create and share a license in under 60 seconds.
 
@@ -168,7 +173,8 @@ Without a central system, licenses live in spreadsheets and emails. Opezee canno
 | Phase | Scope | Status |
 | ----- | ----- | ------ |
 | 1 | Login, Dashboard, Licenses, Products, Settings, the verify/sync/login API | Done |
-| 2 | Email sharing, branding, machine lock, POC self-service, Render deploy | Done |
+| 2 | Email sharing, branding, one-machine lock (later removed), POC self-service, Render deploy | Done |
 | 3 | Firestore → MongoDB migration: data layer on the `mongodb` driver, backup and restore scripts | Done |
-| 4 | Clients page (G1), repo clean-up (G2, G4, G5), CI with a MongoDB service | Next |
-| 5 | Machine-lock reset (G6), audit log (G7), expiry reminders (G8) | Planned |
+| 4 | Max screens per license with admin release (G6), and the `set-max-screens` migration | Done |
+| 5 | Clients page (G1), repo clean-up (G2, G4, G5), CI with a MongoDB service | Next |
+| 6 | Audit log (G7), expiry reminders (G8) | Planned |

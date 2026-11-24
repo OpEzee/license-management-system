@@ -40,7 +40,7 @@ licence-management-system/
 │   ├── services/             MongoDB access + business rules
 │   ├── middleware/           auth, validate, rateLimiter, errorHandler
 │   ├── utils/                generateLicenseKey, licenseDates
-│   ├── scripts/              createAdmin, checkMail, backupDb, restoreBackup
+│   ├── scripts/              createAdmin, checkMail, backupDb, restoreBackup, setMaxScreens
 │   └── tests/api.test.js     End-to-end tests on a throwaway MongoDB database
 ├── scripts/dev.js            Runs nodemon + vite together
 ├── vite.config.mjs           root=client, out=dist, /api proxy, PostCSS inline
@@ -81,7 +81,7 @@ request
 | Caller | Credential | Endpoints |
 | ------ | ---------- | --------- |
 | Admin | JWT bearer token (HS256, `JWT_SECRET`), from `POST /api/admin/login` | Everything except the public set |
-| Product | License key, plus the claimed `machineNumber` | `/licenses/verify`, `/licenses/sync`, `/licenses/poc`, `/licenses/email` |
+| Product | License key. On `/verify` and `/sync`, also the `machineNumber` it runs on, which counts against the license's max screens | `/licenses/verify`, `/licenses/sync`, `/licenses/poc`, `/licenses/email` |
 | Client user | Username and password (bcrypt), checked for the product | `/clients/login` |
 | Anyone | None | `/admin/branding` (GET), `/health` |
 
@@ -119,13 +119,27 @@ Keys look like `PREFIX-XXXX-XXXX-XXXX`. They are generated with a CSPRNG and rej
 normalize key → lookup by licenseKey
   ├─ none                       → 404 not_found
   ├─ productName given & differs → 403 product_mismatch
-  ├─ status deactivated/expired/pending → 200 valid:false + reason
-  ├─ machine claimed & (missing or different) → 403 machine_mismatch
-  ├─ unclaimed & machineNumber given → claim it (write)
-  └─ 200 valid:true
+  ├─ status deactivated/expired/pending → 200 valid:false + reason   (no slot used)
+  └─ admitMachine(machineNumber)       — /verify and /sync only
+       ├─ no machineNumber
+       │    ├─ slots already claimed   → 403 MACHINE_NUMBER_REQUIRED
+       │    └─ none claimed            → 200 valid:true (claims nothing)
+       ├─ already holds a slot         → update lastSeenAt → 200 valid:true
+       ├─ free slot (atomic push)      → claim it          → 200 valid:true
+       └─ every slot taken             → 403 SCREEN_LIMIT_REACHED, valid:false
 ```
 
 The product calls `verify` on launch and `sync` every hour. If either returns `valid: false`, the product must lock.
+
+### Max screens (machine slots)
+
+A license admits at most `maxScreens` machines (1–100, default 1). Claimed machines are stored on the license as `claimedMachines: [{ machineNumber, firstSeenAt, lastSeenAt }]`, with `machineNumber` trimmed and lowercased.
+
+- **No read-then-write.** A claim is one `findOneAndUpdate` whose filter carries both `claimedMachines.machineNumber: { $ne: m }` and `$expr: size(claimedMachines) < maxScreens`, with a `$push` as the update. Machines checking in at the same moment cannot exceed the limit, and one machine racing itself cannot take two slots. If the push fails, `admitMachine` looks once more for the machine's own slot (it may have claimed it a moment earlier) before calling the license full.
+- **Lowering the limit** puts the same size check (`size ≤ new maxScreens`) into the update's filter. When the check fails, the update returns `409 MACHINES_IN_USE` ("Release machines first"). The controller runs that check before it also saves the POC account, so a refused edit changes nothing.
+- **Release:** `DELETE /api/licenses/:id/machines/:machineNumber` (admin) `$pull`s the entry. It returns `404 MACHINE_NOT_FOUND` if the license has no such machine.
+- **Not to be confused with `screens`.** That field holds what Digital Diya's own server reports through `/digital-diya/sync`. Digital Diya sends no machine numbers, so its endpoints, the PIN details, `/poc` and `/email` never check or claim slots. The dashboard hides Max screens and the Machines column for Digital Diya licenses.
+- **Migration:** `npm run set-max-screens -- [--min <n>] [--dry-run]` gives every license without a limit `max(n, machines claimed)`. It carries the old lock's single `machineNumber` field into `claimedMachines`. It is safe to re-run.
 
 ### Client linking
 
@@ -137,7 +151,7 @@ Database `MONGODB_DB` (default `opezee_licenses`). Every document's `_id` is a h
 
 | Collection | Document fields | Indexes | Notes |
 | ---------- | --------------- | ------- | ----- |
-| `licenses` | licenseKey, clientName, companyName, clientUserId, productName, soldBy, duration, startDate, expiryDate, deactivated, status, screens `{ used, limit, plan, updatedAt }`, createdAt, updatedAt | `licenseKey` (unique), `clientUserId`, `productName`, `createdAt` desc | Legacy docs may hold `clientEmail` in place of `clientUserId`, or no `startDate` (in which case `createdAt` is used). `screens` exists only on Digital Diya licenses that have synced |
+| `licenses` | licenseKey, clientName, companyName, clientUserId, productName, soldBy, duration, startDate, expiryDate, deactivated, status, maxScreens, claimedMachines `[{ machineNumber, firstSeenAt, lastSeenAt }]`, screens `{ used, limit, plan, updatedAt }`, createdAt, updatedAt | `licenseKey` (unique), `clientUserId`, `productName`, `createdAt` desc | Legacy docs may hold `clientEmail` in place of `clientUserId`, or no `startDate` (in which case `createdAt` is used). A missing `maxScreens` counts as 1. Until `set-max-screens` runs, old docs may still hold the single `machineNumber` left by the one-machine lock. `screens` exists only on Digital Diya licenses that have synced |
 | `products` | name, description, createdAt, updatedAt | `createdAt` desc | Name uniqueness is checked case-insensitively in code |
 | `clients` | clientName, companyName, username, passwordHash, password, createdAt, updatedAt | `username` | `password` is a readable copy that the admin views see. `passwordHash` (bcrypt) is what login checks |
 | `admins` | email, name, passwordHash, createdAt, updatedAt | `email` (unique) | |

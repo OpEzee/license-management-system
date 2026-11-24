@@ -5,11 +5,15 @@ import LicenseKey from './LicenseKey'
 import StatusSelect from './StatusSelect'
 import ShareLicenseModal from './ShareLicenseModal'
 import DatePicker from './DatePicker'
+import ConfirmDialog from './ConfirmDialog'
+import ClaimedMachines from './ClaimedMachines'
+import { isDigitalDiya } from '../hooks/useLicenses'
 import { DURATIONS, formatDate, previewExpiry, toDateInput } from '../services/format'
 
 const today = () => new Date().toISOString().slice(0, 10)
 
 const MIN_PASSWORD_LENGTH = 8
+const MAX_SCREENS_LIMIT = 100
 
 const EMPTY = {
   clientName: '',
@@ -21,6 +25,8 @@ const EMPTY = {
   duration: '1_year',
   startDate: today(),
   expiryDate: '',
+  // Kept as the input's text; sent as a number.
+  maxScreens: '1',
 }
 
 const sameName = (a, b) =>
@@ -54,6 +60,13 @@ function validateForm(values) {
   if (!values.soldBy.trim()) errors.soldBy = 'Sold by is required'
   if (!values.startDate) errors.startDate = 'Start date is required'
 
+  // Digital Diya counts its screens itself, so the field is hidden there.
+  if (!isDigitalDiya(values)) {
+    const n = Number(values.maxScreens)
+    if (!String(values.maxScreens).trim() || !Number.isInteger(n) || n < 1 || n > MAX_SCREENS_LIMIT)
+      errors.maxScreens = `Enter a whole number from 1 to ${MAX_SCREENS_LIMIT}`
+  }
+
   if (values.duration === 'custom') {
     if (!values.expiryDate) errors.expiryDate = 'Expiry date is required'
     else if (values.startDate && values.expiryDate <= values.startDate)
@@ -77,6 +90,8 @@ export default function LicenseFormModal({
   clients = [],
   onClose,
   onSubmit,
+  // (machineNumber) => the updated license, or null if the release failed.
+  onReleaseMachine,
 }) {
   const isEdit = Boolean(license)
   const [values, setValues] = useState(EMPTY)
@@ -86,9 +101,16 @@ export default function LicenseFormModal({
   const [errors, setErrors] = useState({})
   const [submitting, setSubmitting] = useState(false)
   const [sharing, setSharing] = useState(false)
+  // Held here rather than re-read from `license`: a new license prop resets
+  // the whole form, which would throw away edits the admin has not saved yet.
+  const [machines, setMachines] = useState([])
+  const [releaseTarget, setReleaseTarget] = useState(null)
+  const [releasing, setReleasing] = useState(false)
 
   useEffect(() => {
     if (!open) return
+    setMachines(license?.claimedMachines || [])
+    setReleaseTarget(null)
     setErrors({})
     setAutoFilled(pocFieldsOf(null))
     setDeactivated(Boolean(license?.deactivated))
@@ -105,6 +127,7 @@ export default function LicenseFormModal({
             duration: license.duration || 'custom',
             startDate: toDateInput(license.startDate),
             expiryDate: toDateInput(license.expiryDate),
+            maxScreens: String(license.maxScreens ?? 1),
           }
         : { ...EMPTY, startDate: today() }
     )
@@ -158,6 +181,21 @@ export default function LicenseFormModal({
   )
   const isCustom = values.duration === 'custom'
   const shownExpiry = isCustom ? values.expiryDate : computedExpiry
+  // The field follows the product being typed; the machines panel follows the
+  // saved license, whose slots are what /verify actually counts.
+  const showMaxScreens = !isDigitalDiya(values)
+  const showMachines = isEdit && !isDigitalDiya(license)
+
+  const confirmRelease = async () => {
+    setReleasing(true)
+    try {
+      const updated = await onReleaseMachine(releaseTarget.machineNumber)
+      if (updated) setMachines(updated.claimedMachines)
+      setReleaseTarget(null)
+    } finally {
+      setReleasing(false)
+    }
+  }
 
   // A POC is one person with many licenses. The email links the license to
   // that POC's account, so their product login sees the new license.
@@ -198,6 +236,7 @@ export default function LicenseFormModal({
           startDate: values.startDate,
           // The backend recomputes this for presets; sending it keeps custom working.
           ...(isCustom ? { expiryDate: values.expiryDate } : {}),
+          ...(showMaxScreens ? { maxScreens: Number(values.maxScreens) } : {}),
         },
         // Status has its own endpoint, so it travels beside the fields.
         isEdit ? { deactivated } : undefined
@@ -239,7 +278,9 @@ export default function LicenseFormModal({
           'Create License'
         )
       }
-      onClose={submitting ? () => {} : onClose}
+      // Escape reaches every open dialog, so while the release confirmation is
+      // up this one ignores it rather than closing underneath.
+      onClose={submitting || releaseTarget ? () => {} : onClose}
       maxWidth="max-w-2xl"
     >
       <form onSubmit={handleSubmit} noValidate>
@@ -272,6 +313,15 @@ export default function LicenseFormModal({
               </p> */}
             </div>
           </div>
+        )}
+
+        {showMachines && (
+          <ClaimedMachines
+            machines={machines}
+            maxScreens={license.maxScreens ?? 1}
+            releasing={releasing}
+            onRelease={setReleaseTarget}
+          />
         )}
 
         <div className="grid gap-4 sm:grid-cols-2">
@@ -417,9 +467,10 @@ export default function LicenseFormModal({
             {fieldError('soldBy')}
           </div>
 
-          {/* Duration spans the row on its own; the two dates then pair up
-              underneath it, which reads in the order they are filled in. */}
-          <div className="sm:col-span-2">
+          {/* Duration pairs with Max screens, or spans the row on its own where
+              that is hidden; the two dates then pair up underneath it, which
+              reads in the order they are filled in. */}
+          <div className={showMaxScreens ? '' : 'sm:col-span-2'}>
             <label className="label" htmlFor="duration">
               License Duration <span className="text-red-500">*</span>
             </label>
@@ -436,6 +487,31 @@ export default function LicenseFormModal({
               ))}
             </select>
           </div>
+
+          {showMaxScreens && (
+            <div>
+              <label className="label" htmlFor="maxScreens">
+                Max screens <span className="text-red-500">*</span>
+              </label>
+              <input
+                id="maxScreens"
+                type="number"
+                inputMode="numeric"
+                min="1"
+                max={MAX_SCREENS_LIMIT}
+                step="1"
+                className={`input ${errors.maxScreens ? 'border-red-400' : ''}`}
+                value={values.maxScreens}
+                onChange={(e) => setField('maxScreens', e.target.value)}
+                aria-describedby="maxScreensHelp"
+              />
+              {fieldError('maxScreens') || (
+                <p id="maxScreensHelp" className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  How many machines can use this key
+                </p>
+              )}
+            </div>
+          )}
 
           <div>
             <label className="label" htmlFor="startDate">
@@ -483,6 +559,20 @@ export default function LicenseFormModal({
           onClose={() => setSharing(false)}
         />
       )}
+
+      <ConfirmDialog
+        open={Boolean(releaseTarget)}
+        busy={releasing}
+        title="Release this machine?"
+        message={
+          releaseTarget
+            ? `${releaseTarget.machineNumber} will stop using this license key, and its slot becomes free for another machine. If it checks in again, it is accepted only while a slot is free.`
+            : ''
+        }
+        confirmLabel="Release"
+        onConfirm={confirmRelease}
+        onCancel={() => setReleaseTarget(null)}
+      />
     </Modal>
   )
 }
