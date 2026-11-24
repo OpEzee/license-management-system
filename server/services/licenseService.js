@@ -42,7 +42,7 @@ const normalizeUserId = (value) => String(value || '').trim().toLowerCase();
  */
 async function clientDirectory() {
   const docs = await getCollection('clients')
-    .find({}, { projection: { username: 1, clientName: 1, companyName: 1 } })
+    .find({}, { projection: DIRECTORY_FIELDS })
     .toArray();
   const map = new Map();
   docs.forEach((data) => {
@@ -52,6 +52,43 @@ async function clientDirectory() {
       companyName: data.companyName,
     });
   });
+  return map;
+}
+
+const DIRECTORY_FIELDS = { username: 1, clientName: 1, companyName: 1 };
+
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** The user ID toPublicLicense links a license by, including the legacy field. */
+const linkedUserIdOf = (doc) => doc.clientUserId || doc.clientEmail || '';
+
+/**
+ * The directory for ONE license: just its linked account, in the same shape
+ * as clientDirectory(), so toPublicLicense reads it identically. This is what
+ * /verify, /sync and the other single-license reads use, instead of loading
+ * every client on each call.
+ *
+ * Usernames are stored lowercased and trimmed, so the indexed exact match
+ * nearly always hits. Records carried over from Firestore may not be, and
+ * clientDirectory() matched those after normalising them; the
+ * case-insensitive fallback keeps that, and only runs on a miss.
+ */
+async function linkedClientDirectory(doc) {
+  const key = normalizeUserId(linkedUserIdOf(doc));
+  const map = new Map();
+  if (!key) return map;
+
+  const clients = getCollection('clients');
+  const account =
+    (await clients.findOne({ username: key }, { projection: DIRECTORY_FIELDS })) ||
+    (await clients.findOne(
+      { username: { $regex: `^\\s*${escapeRegex(key)}\\s*$`, $options: 'i' } },
+      { projection: DIRECTORY_FIELDS }
+    ));
+
+  if (account && account.username) {
+    map.set(key, { clientName: account.clientName, companyName: account.companyName });
+  }
   return map;
 }
 
@@ -231,7 +268,8 @@ async function listLicenses() {
 }
 
 async function getLicenseById(id) {
-  return toPublicLicense(await findOrThrow(id), await clientDirectory());
+  const doc = await findOrThrow(id);
+  return toPublicLicense(doc, await linkedClientDirectory(doc));
 }
 
 async function updateLicense(id, payload) {
@@ -461,7 +499,7 @@ async function checkLicense({ licenseKey, productName }) {
 
   if (!doc) return { outcome: 'not_found' };
 
-  const license = toPublicLicense(doc, await clientDirectory());
+  const license = toPublicLicense(doc, await linkedClientDirectory(doc));
 
   // Product is checked before dates: a key used in the wrong product should say
   // so, rather than leaking that it happens to be expired elsewhere.
@@ -513,7 +551,7 @@ async function updateLicenseContact({ licenseKey, productName, clientName, clien
   const doc = await findByKey(licenseKey);
   if (!doc) throw new ApiError(404, 'Invalid license key', 'LICENSE_NOT_FOUND');
 
-  const current = toPublicLicense(doc, await clientDirectory());
+  const current = toPublicLicense(doc, await linkedClientDirectory(doc));
 
   if (
     productName &&
@@ -674,4 +712,7 @@ module.exports = {
   listClients,
   computeStatus,
   toPublicLicense,
+  // Exported for the test that proves the single lookup answers like the full one.
+  clientDirectory,
+  linkedClientDirectory,
 };

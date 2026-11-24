@@ -533,6 +533,65 @@ const server = app.listen(0, async () => {
     // Leave the later suites the database they expect.
     await rawLicenses.deleteMany({ clientUserId: SCREENS_POC })
 
+    console.log('\n-- verify reads one client, not all --')
+    const licenseService = require(path.join(BACKEND, 'services/licenseService.js'))
+    const rawClients = db.getDb().collection('clients')
+    const ONE_IP = '198.51.100.50'
+    const lookupClient = (id, username, name) => ({
+      _id: id, username, clientName: name, companyName: `${name} Co`, passwordHash: 'x',
+      createdAt: new Date(), updatedAt: new Date(),
+    })
+    const lookupAccounts = [
+      lookupClient('lookup-c1', 'lookup.linked@test.com', 'Lookup Account'),
+      // As carried over from Firestore: capitals and stray spaces.
+      lookupClient('lookup-c2', ' Lookup.Legacy@Test.com ', 'Lookup Legacy'),
+      // Enough other accounts that reading them all would show up.
+      ...Array.from({ length: 30 }, (_, i) => lookupClient(`lookup-x${i}`, `lookup.other${i}@test.com`, `Other ${i}`)),
+    ]
+    await rawClients.insertMany(lookupAccounts)
+    const lookupCases = [
+      ['linked, names typed on the license', { clientUserId: 'lookup.linked@test.com', clientName: 'Typed', companyName: 'Typed Co' }],
+      ['linked, names left blank', { clientUserId: 'lookup.linked@test.com', clientName: '', companyName: '' }],
+      ['user ID in capitals', { clientUserId: 'LOOKUP.LINKED@TEST.COM', clientName: '', companyName: '' }],
+      ['legacy clientEmail field', { clientEmail: 'lookup.linked@test.com', clientName: '', companyName: '' }],
+      ['legacy username with capitals and spaces', { clientUserId: 'lookup.legacy@test.com', clientName: '', companyName: '' }],
+      ['user ID with no account', { clientUserId: 'lookup.nobody@test.com', clientName: 'Nobody', companyName: '' }],
+      ['not linked at all', { clientUserId: '', clientName: 'Unlinked', companyName: '' }],
+    ]
+    const fullDirectory = await licenseService.clientDirectory()
+    for (const [what, over] of lookupCases) {
+      const doc = legacyDoc({ maxScreens: 1, claimedMachines: [], ...over })
+      if (over.clientEmail) delete doc.clientUserId
+      const viaOne = JSON.stringify(licenseService.toPublicLicense(doc, await licenseService.linkedClientDirectory(doc)))
+      const viaAll = JSON.stringify(licenseService.toPublicLicense(doc, fullDirectory))
+      check(`single lookup answers exactly like the full one: ${what}`, viaOne === viaAll, { viaOne, viaAll })
+    }
+
+    // The profiler records every read on the test database: prove /verify
+    // reads one client document through the username index, not all 32.
+    const profiled = legacyDoc({ clientUserId: 'lookup.linked@test.com', clientName: '', companyName: '', maxScreens: 1, claimedMachines: [] })
+    await rawLicenses.insertOne(profiled)
+    const testDb = db.getDb()
+    await testDb.command({ profile: 0 })
+    await testDb.collection('system.profile').drop().catch(() => {})
+    await testDb.command({ profile: 2 })
+    const verifiedOne = await call('POST', '/api/licenses/verify',
+      { licenseKey: profiled.licenseKey, productName: 'My Product' }, { auth: false, ip: ONE_IP })
+    await testDb.command({ profile: 0 })
+    const clientReads = await testDb.collection('system.profile')
+      .find({ ns: `${testDb.databaseName}.clients`, op: { $in: ['query', 'command'] } }).toArray()
+    check('verify still answers with the linked account filling the blanks',
+      verifiedOne.body.valid === true && verifiedOne.body.license.clientName === 'Lookup Account', verifiedOne.body)
+    check('verify reads at most one client document, of 32',
+      clientReads.length > 0 && clientReads.every((r) => (r.docsExamined ?? 0) <= 1),
+      clientReads.map((r) => ({ docsExamined: r.docsExamined, plan: r.planSummary })))
+    check('...through the clients.username index',
+      clientReads.some((r) => /IXSCAN \{ username: 1 \}/.test(r.planSummary || '')),
+      clientReads.map((r) => r.planSummary))
+    await testDb.collection('system.profile').drop().catch(() => {})
+    await rawLicenses.deleteOne({ _id: profiled._id })
+    await rawClients.deleteMany({ _id: { $in: lookupAccounts.map((c) => c._id) } })
+
     console.log('\n-- digital diya validate --')
     const DD_IP = '203.0.113.11'
     const DD_URL = '/api/licenses/digital-diya/validate'

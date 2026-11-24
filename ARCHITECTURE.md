@@ -147,6 +147,8 @@ A license admits at most `maxScreens` machines (1–100, default 1). Claimed mac
 
 A license's `clientUserId` links it to a `clients` document by username. Anything typed on the license itself takes priority. The account only fills fields that were left blank. When a license has no link and its client name matches exactly one account, it is linked automatically. Creating a new account adopts any unlinked licenses with a matching name and company.
 
+Reads of **one** license (`/verify`, `/sync`, the Digital Diya pair, the PIN details, `/poc`, `/email` and `getLicenseById`) load only the linked account, through `linkedClientDirectory()`. That's an indexed exact match on `clients.username`, with a case-insensitive fallback only on a miss, for usernames carried over from Firestore with capitals or spaces. The list endpoints, and the create and edit paths that match accounts by name, still load the full `clientDirectory()`.
+
 ## 6. Data model (MongoDB)
 
 Database `MONGODB_DB` (default `opezee_licenses`). Every document's `_id` is a hex **string** from `newId()`, not an `ObjectId`: records carried over from Firestore kept their original ids, so links that contain them still work. Dates are stored as BSON dates.
