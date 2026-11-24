@@ -33,6 +33,7 @@ This is the admin dashboard (React 18 + Vite + Tailwind) and license API (Expres
 | Restore the newest backup | `npm run restore-db` |
 | Restore a specific backup | `npm run restore-db -- <folder>` |
 | Give existing licenses a max-screens limit | `npm run set-max-screens -- --min <n>` (add `--dry-run` to preview). Run it once before deploying max screens. |
+| Remove readable client passwords | `npm run strip-client-passwords` (add `-- --dry-run` to preview). Run it once before deploying hash-only passwords, and again after restoring an older backup. |
 | Run in Docker | `docker build -t opezee-lms .` then `docker run --env-file .env -p 5000:5000 opezee-lms`. `MONGODB_URI` must reach MongoDB from inside the container: use `host.docker.internal`, not `127.0.0.1`. |
 
 **Definition of done:** `npm test` passes, `npm run build` succeeds, and `README.md` / `PRD.md` are updated if behaviour or scope changed.
@@ -58,6 +59,7 @@ This is the admin dashboard (React 18 + Vite + Tailwind) and license API (Expres
    - license keys come only from `generateLicenseKey.js` and cannot be edited
    - max screens per license: on `/verify` and `/sync`, a new machine beyond `maxScreens` gets `403 SCREEN_LIMIT_REACHED`, and once any slot is claimed, a missing machine number gets `403 MACHINE_NUMBER_REQUIRED`. Slots are claimed only through `admitMachine()`, as one atomic `findOneAndUpdate` with the size check in its filter, never as a read followed by a write. Don't confuse this with `screens`, which Digital Diya reports itself.
    - wrong-email and wrong-password logins return the same error
+   - client (POC) passwords are stored only as bcrypt hashes. Never store a readable copy, and never return a password or hash from any endpoint. The only exception is a generated password, returned once by the response that created it (`generatedPassword` or `pocPassword`).
 6. Keep the legacy-field fallbacks in `toPublicLicense()` (`clientEmail` and `createdAt`).
 
 ## Rules for client changes

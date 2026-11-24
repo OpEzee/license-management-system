@@ -4,9 +4,9 @@ Checked against the repo on **24 November 2026**, on branch `production` at `f9f
 
 ## 1. Summary
 
-- **Feature-complete for v1.** Licenses, products, settings, max screens, Digital Diya, the product API, the Help page and the dashboard are all built. `npm test` passes: 320 server and 40 client tests. CI runs them on GitHub.
-- **Not deployable yet.** Products must start sending `machineNumber`, the production database needs the `set-max-screens` migration, Render needs `MONGODB_URI` and `CLIENT_PIN`, and 15 commits are still only local.
-- **Biggest open risk.** Client passwords are stored and returned in readable form. A hash-only + show-once plan is written and waiting for a go-ahead. The npm highs, the health check, session revocation, the default PIN and the verify reads are fixed.
+- **Feature-complete for v1.** Licenses, products, settings, max screens, Digital Diya, the product API, the Help page and the dashboard are all built. `npm test` passes: 358 server and 40 client tests. CI runs them on GitHub.
+- **Not deployable yet.** Products must start sending `machineNumber`, the production database needs the `set-max-screens` and `strip-client-passwords` migrations, Render needs `MONGODB_URI` and `CLIENT_PIN`, and 16 commits are still only local.
+- **Biggest open risk.** Client passwords are now hash-only in the code (generated, shown once, never returned), but production records keep their readable copies until `strip-client-passwords` runs there, and old backups still hold them. The npm highs, the health check, session revocation, the default PIN and the verify reads are fixed.
 
 ## 2. Feature list
 
@@ -26,19 +26,20 @@ Checked against the repo on **24 November 2026**, on branch `production` at `f9f
 | `set-max-screens` migration | Partly done | The script and tests exist (`server/scripts/setMaxScreens.js`). Nothing in the repo shows it has been run on production |
 | Dockerfile | Done | Multi-stage. The build doesn't run tests, because they need a live MongoDB |
 | render.yaml | Partly done | `MONGODB_URI` and `CLIENT_PIN` are `sync: false`, so both must be set in the Render dashboard: a hosted URI, and a unique PIN |
-| CLAUDE.md, PRD.md, ARCHITECTURE.md | Done | The stale lines (`CLAUDE.md:93`, PRD G2, G4 and G5) are fixed. One mismatch remains: PRD CLI-1 says passwords are "stored as a bcrypt hash", but the code also stores a readable copy (Pending #1) |
+| CLAUDE.md, PRD.md, ARCHITECTURE.md | Done | The stale lines (`CLAUDE.md:93`, PRD G2, G4 and G5) are fixed. PRD CLI-1 (hash only) now matches the code, with CLI-4 and CLI-5 for generated passwords and reset |
+| Hash-only client passwords | Done (code) | `generatePassword()`, `POST /api/clients/:id/reset-password`, show-once `ShowOncePassword.jsx`; `npm run strip-client-passwords`. Not complete until the script has run on production (Pending #1) |
 
 ## 3. Pending
 
 | # | Item | Priority | Evidence | Next step |
 | --- | --- | --- | --- | --- |
-| 1 | Plaintext `password` on clients | **High** | Written at `clientService.js:121`, `:168`. Returned at `:41` (via `:132`, `:136`, `:281`). Shown at `LicenseFormModal.jsx:46`, `:173–174`, `:445` (`type="text"`) | Implement the hash-only + show-once plan, then run the strip script |
-| 2 | Readable passwords in `backups/` | Medium | No `backups/` folder on disk (0 files). The pre-migration Firestore export isn't in the repo, so I couldn't check it | Find and delete or lock away any old exports, wherever they are kept |
-| 3 | Deploy prerequisites | **High** | Hosted pages take `&machine=` (`productLink.js:61`). Product builds sending `machineNumber` can't be checked from this repo. No sign the migration has run | Ship product updates, then `backup-db` → `set-max-screens -- --min 5` on production |
-| 4 | Local commits not on GitHub | **High** | 15 commits (`4f9ee2d` … the "remove dead code" commit); `production` is ahead of `origin` by 15 | Push, which also starts the first CI run, and open a PR to `main` (`main` is at `921ebdc`) |
+| 1 | Readable `password` on existing client records | **High** | The code no longer writes or returns it (the "hash-only client passwords" commit), and a reset drops it. Records already in production keep it until the migration runs | On production: `backup-db`, then `strip-client-passwords -- --dry-run`, then `strip-client-passwords` |
+| 2 | Readable passwords in backups | **High** | No `backups/` folder on disk here (0 files). Every backup taken before the strip run, and the pre-migration Firestore export (not in the repo), still hold readable passwords | Delete them or lock them away, wherever they are kept. Re-run the strip script after any restore from one |
+| 3 | Deploy prerequisites | **High** | Hosted pages take `&machine=` (`productLink.js:61`). Product builds sending `machineNumber` can't be checked from this repo. No sign the migrations have run | Ship product updates, then `backup-db` → `set-max-screens -- --min 5` → `strip-client-passwords` on production |
+| 4 | Local commits not on GitHub | **High** | 16 commits (`4f9ee2d` … the "hash-only client passwords" commit); `production` is ahead of `origin` by 16 | Push, which also starts the first CI run, and open a PR to `main` (`main` is at `921ebdc`) |
 | 5 | Hosted MongoDB and staff PIN on Render | **High** | `render.yaml` has `MONGODB_URI` and `CLIENT_PIN` as `sync: false`. The actual values are in the Render dashboard and can't be checked from here | Set an Atlas `MONGODB_URI` (and allow Render's IPs) and a unique `CLIENT_PIN` |
 | 6 | CI workflow | Done | `.github/workflows/ci.yml`: a `mongo:7` service, then `npm ci` → `npm test` → `npm run build` → `npm audit --omit=dev --audit-level=high`, on `main` and `production`. Steps checked locally; the workflow hasn't run on GitHub yet | Push, and watch the first run |
-| 7 | Clients page | Medium | `client/src/pages/Clients.jsx` missing (PRD G1). The `/api/clients` CRUD exists | Build the page after #1, so it never handles readable passwords |
+| 7 | Clients page | Medium | `client/src/pages/Clients.jsx` missing (PRD G1). The `/api/clients` CRUD and reset-password exist, and no longer return passwords | Build the page, reusing `ShowOncePassword` for create and reset |
 | 8 | README: setup, env table, API reference | Medium | README sections stop at Overview, Use Cases, Flow, Max screens and Database. There's no setup, environment table or API reference | Write all three. `CLAUDE.md` says the README holds them |
 | 9 | Dead code and stray files | Done | Removed: `daysUntil` and `durationLabel` (`format.js`), the unused `licenseService.listClients`, the 8 commented-out JSX blocks, and the `copyDetails`, `buildMessage` and Settings `useAuth` code they left unused. `CLAUDE.md:93` and PRD G2, G4 and G5 updated | Only `.dockerignore:13–14` remain: they ignore two files that no longer exist, which is harmless |
 | 10 | npm audit / esbuild / bundle | Low | High advisories fixed (`3edc099`): `vite` 6.4.6, `body-parser` 1.20.9, `follow-redirects` 1.16.3, `source-map-js` 1.2.4. `npm audit --omit=dev`: 0 high, 0 critical, 5 moderate (`react-router` needs v7, a major; `nodemailer`, `qs`, `postcss-selector-parser` are in range). `esbuild@0.25.12` postinstall still not approved. Bundle 670 kB (175 kB gzip) | `react-router` v7 later. Approve or deny esbuild's install script. Code-split |
@@ -72,13 +73,13 @@ Checked against the repo on **24 November 2026**, on branch `production` at `f9f
 
 ## 5. Recommended order
 
-1. **Hash-only client passwords:** the approach is chosen and the plan is written; it needs a go-ahead on its two open questions. Then run `strip-client-passwords` (Pending #1).
+1. ~~**Hash-only client passwords**~~ Done in code. Still to do: run `strip-client-passwords` on production and deal with old backups (Pending #1, #2).
 2. ~~**Revoke the old Firebase service-account key**~~ Done (Pending #11).
 3. ~~**Fix the 4 high npm advisories**~~ Done in `3edc099` (Pending #10).
 4. ~~**Make `/health` ping MongoDB**~~ Done in `74f732b` (Improvements: Operations).
 5. **Ship product builds that send `machineNumber`**, and pass `&machine=` to the hosted pages (Pending #3).
 6. **Production data:** run `backup-db`, then `set-max-screens -- --min 5`, then `strip-client-passwords` (Pending #3).
-7. **Render and GitHub:** set an Atlas `MONGODB_URI` and a unique `CLIENT_PIN`, push the 15 commits, and open a PR to `main` (Pending #4, #5).
+7. **Render and GitHub:** set an Atlas `MONGODB_URI` and a unique `CLIENT_PIN`, push the 16 commits, and open a PR to `main` (Pending #4, #5).
 8. ~~**CI:** add `ci.yml` with a `mongo` service container~~ Done: test, build and audit on every push and PR to `main` and `production` (Pending #6).
 9. **Clients page:** build `Clients.jsx`, its route and its sidebar entry (Pending #7).
 10. **Expiry reminders and a renew action** (PRD G8 and the Help workaround).

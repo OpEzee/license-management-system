@@ -257,9 +257,9 @@ export default function Help() {
             <>
               Open <strong>Licenses</strong>, then click <strong>Create License</strong>.
             </>,
-            'Pick the client (POC) from the list, or type a new name. Picking an existing one fills in their email, company and password.',
+            'Pick the client (POC) from the list, or type a new name. Picking an existing one fills in their email and company.',
             'Choose the product.',
-            'Enter or check the email, company and password the client will sign in with.',
+            'Enter or check the email and company the client will sign in with. There is no password field: a new POC gets a generated one, and an existing POC keeps theirs.',
             <>
               Enter <strong>Sold By</strong>.
             </>,
@@ -274,6 +274,10 @@ export default function Help() {
               Digital Diya licenses don&apos;t have this field, because Digital Diya counts its own screens.
             </>,
             'Save.',
+            <>
+              For a new POC, the receipt shows their <strong>password</strong>. Copy it and send it with the key:
+              it is shown only this once.
+            </>,
           ]}
         />
         <p className="rounded-lg bg-slate-50 px-3 py-2 dark:bg-slate-800/50">
@@ -369,8 +373,14 @@ export default function Help() {
           spelling does.
         </p>
         <p>
-          <strong>Clients</strong> are set up on the license form: the POC&apos;s name, their email, their company
-          and a password of at least 8 characters. The client signs in to the product with that email and password.
+          <strong>Clients</strong> are set up on the license form: the POC&apos;s name, their email and their
+          company. The client signs in to the product with that email and a password the server generates: 12
+          capital letters and digits, without look-alikes such as O and 0. It is shown once, when the account is
+          made, and only a scrambled (hashed) copy is kept, so nobody can look it up later.
+        </p>
+        <p>
+          If a POC loses their password, open any of their licenses and click <strong>Reset password</strong>. Their
+          old password stops working on every product at once, and the new one is shown once to copy and send.
         </p>
       </Section>
 

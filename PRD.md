@@ -100,7 +100,9 @@ Without a central system, licenses live in spreadsheets and emails. Opezee canno
 
 | ID    | Requirement |
 | ----- | ----------- |
-| CLI-1 | Client accounts hold a client name, company, username and password (8 characters minimum, stored as a bcrypt hash). |
+| CLI-1 | Client accounts hold a client name, company, username and password. The password is stored **only** as a bcrypt hash; no readable copy is kept, and no response ever returns one. |
+| CLI-4 | The dashboard never asks for a password. A new account gets a generated one: 12 characters, uppercase letters and digits without the look-alikes `I L O U 0 1`, no separators, drawn with `crypto.randomInt`. It is returned once, by the response that created it (`generatedPassword` from `POST /api/clients`, `pocPassword` from a license save that created the account), and the dashboard shows it once with a copy button. The admin API still accepts a typed password (8–128 characters), which is hashed and never echoed. |
+| CLI-5 | `POST /api/clients/:id/reset-password` (admin) replaces the password with a new generated one, returned once. The old one stops working at once. The license form offers it as **Reset password**, after a confirmation. |
 | CLI-2 | The list shows each client's license count. |
 | CLI-3 | When an account is created, any unlinked licenses with the same client name (and company, if one is recorded) are linked to the new username. |
 

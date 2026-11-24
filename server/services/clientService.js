@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 
 const { collection: getCollection, newId } = require('../config/db');
@@ -9,6 +10,13 @@ const licenseService = require('./licenseService');
 const COLLECTION = 'clients';
 const BCRYPT_ROUNDS = 12;
 const MIN_PASSWORD_LENGTH = 8;
+
+// Generated passwords: uppercase and digits without the look-alikes I L O U 0 1,
+// so a POC reading one off a screen or hearing it on the phone gets it right.
+// 30 symbols x 12 = about 59 bits, far past what the client-login rate limit
+// lets anyone guess. No separators: the product compares the password exactly.
+const PASSWORD_ALPHABET = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
+const GENERATED_PASSWORD_LENGTH = 12;
 
 function collection() {
   return getCollection(COLLECTION);
@@ -29,16 +37,15 @@ function toIso(value) {
 const normalizeUsername = (value) => String(value || '').trim().toLowerCase();
 
 /**
- * Never leaks passwordHash. The readable password is opt-in and is only passed
- * for admin-facing responses — never from the product login endpoint.
+ * Never carries a password or its hash, to anyone. Only the bcrypt hash is
+ * stored; a generated password is handed back once, by the call that made it.
  */
-function toPublicClient(data, { includePassword = false } = {}) {
+function toPublicClient(data) {
   return {
     id: data._id,
     clientName: data.clientName,
     companyName: data.companyName,
     username: data.username,
-    ...(includePassword ? { password: data.password || '' } : {}),
     createdAt: toIso(data.createdAt),
     updatedAt: toIso(data.updatedAt),
   };
@@ -104,12 +111,30 @@ function assertPasswordStrength(password) {
   }
 }
 
+/** A fresh password from PASSWORD_ALPHABET, drawn with a CSPRNG. */
+function generatePassword() {
+  let out = '';
+  for (let i = 0; i < GENERATED_PASSWORD_LENGTH; i += 1) {
+    out += PASSWORD_ALPHABET[crypto.randomInt(PASSWORD_ALPHABET.length)];
+  }
+  return out;
+}
+
+/**
+ * Creates a POC account. Without a password one is generated and returned
+ * once as `generatedPassword` — it is never stored readably, so this is the
+ * only time anyone sees it. A typed password (admin API only) is hashed and
+ * never sent back; `generatedPassword` is then null.
+ */
 async function createClient({ clientName, companyName, username, password }) {
   const normalized = normalizeUsername(username);
   await assertUsernameAvailable(normalized);
   await assertPocAvailable(clientName);
   await assertCompanyAvailable(companyName);
-  assertPasswordStrength(password);
+
+  const generatedPassword = password ? null : generatePassword();
+  const secret = password || generatedPassword;
+  assertPasswordStrength(secret);
 
   const now = new Date();
   const doc = {
@@ -117,8 +142,7 @@ async function createClient({ clientName, companyName, username, password }) {
     clientName,
     companyName,
     username: normalized,
-    passwordHash: await bcrypt.hash(password, BCRYPT_ROUNDS),
-    password,
+    passwordHash: await bcrypt.hash(secret, BCRYPT_ROUNDS),
     createdAt: now,
     updatedAt: now,
   };
@@ -129,11 +153,29 @@ async function createClient({ clientName, companyName, username, password }) {
   // finds them.
   await licenseService.adoptUnlinkedLicenses(clientName, normalized, companyName);
 
-  return toPublicClient(doc, { includePassword: true });
+  return { client: toPublicClient(doc), generatedPassword };
 }
 
 async function getClientById(id) {
-  return toPublicClient(await findOrThrow(id), { includePassword: true });
+  return toPublicClient(await findOrThrow(id));
+}
+
+/**
+ * Replaces the POC's password with a generated one, returned once. The old
+ * one stops working at once on every product they sign in to.
+ */
+async function resetPassword(id) {
+  const doc = await findOrThrow(id);
+  const generatedPassword = generatePassword();
+  await collection().updateOne(
+    { _id: doc._id },
+    {
+      $set: { passwordHash: await bcrypt.hash(generatedPassword, BCRYPT_ROUNDS), updatedAt: new Date() },
+      // Records from before hash-only may still hold a readable copy.
+      $unset: { password: '' },
+    }
+  );
+  return { client: await getClientById(doc._id), generatedPassword };
 }
 
 async function updateClient(id, { clientName, companyName, username, password }) {
@@ -161,14 +203,18 @@ async function updateClient(id, { clientName, companyName, username, password })
     updates.username = normalized;
   }
 
-  // Blank means "leave the password alone" — the edit form does not prefill it.
+  // Blank means "leave the password alone". A new one is only ever hashed.
+  let unset;
   if (password) {
     assertPasswordStrength(password);
     updates.passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-    updates.password = password;
+    unset = { password: '' };
   }
 
-  await collection().updateOne({ _id: doc._id }, { $set: updates });
+  await collection().updateOne(
+    { _id: doc._id },
+    { $set: updates, ...(unset ? { $unset: unset } : {}) }
+  );
 
   // Their licenses have to follow the edit. A changed email in particular is
   // what licenses are matched on, so leaving them behind splits the Clients
@@ -206,8 +252,12 @@ async function licensesFiledUnder(username, exceptLicenseId) {
  *   account is this POC being edited and takes the new email. If other licenses
  *   still use it, the new email is a new POC: a new account, and the others
  *   stay where they are.
- * - An account other licenses also use keeps its POC name and company; only
- *   the password follows the form (it is one sign-in for that email).
+ * - An account other licenses also use keeps its POC name and company.
+ *
+ * Passwords: a new account gets a generated one, returned once as
+ * `generatedPassword`. An existing account keeps its password unless one is
+ * sent (admin API only; the dashboard resets instead), so `generatedPassword`
+ * is null for it.
  *
  * The Clients page edits the account itself, and there every license follows.
  */
@@ -233,14 +283,13 @@ async function savePocAccount({
 
   if (!doc) return createClient({ clientName, companyName, username, password });
 
-  const data = doc;
-  const shared = (await licensesFiledUnder(data.username, licenseId)) > 0;
-  return updateClient(doc._id, {
+  const shared = (await licensesFiledUnder(doc.username, licenseId)) > 0;
+  const client = await updateClient(doc._id, {
     ...(shared ? {} : { clientName, companyName }),
     username,
-    // Re-hashing an unchanged password costs a bcrypt round for nothing.
-    ...(password && password !== data.password ? { password } : {}),
+    ...(password ? { password } : {}),
   });
+  return { client, generatedPassword: null };
 }
 
 async function deleteClient(id) {
@@ -278,7 +327,7 @@ async function listClients() {
   const rows = new Map();
 
   accounts.forEach((doc) => {
-    const client = toPublicClient(doc, { includePassword: true });
+    const client = toPublicClient(doc);
     rows.set(normalizeUsername(client.username), {
       ...client,
       hasLogin: true,
@@ -303,7 +352,6 @@ async function listClients() {
       rows.set(key, {
         id: null,
         hasLogin: false,
-        password: '',
         clientName: license.clientName,
         companyName: license.companyName,
         username: license.clientUserId || '',
@@ -391,9 +439,11 @@ async function login({ username, password, productName }) {
 module.exports = {
   COLLECTION,
   MIN_PASSWORD_LENGTH,
+  generatePassword,
   createClient,
   getClientById,
   updateClient,
+  resetPassword,
   savePocAccount,
   deleteClient,
   listClients,

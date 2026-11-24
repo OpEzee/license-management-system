@@ -42,21 +42,25 @@ const isoDate = (field, label, { optional = false } = {}) => {
     .withMessage(`${label} must be a valid date`);
 };
 
-// The POC's product sign-in, entered on the license form. Optional on the wire
-// so a license can still be saved without touching the account; when it is
-// sent, the email it signs in with has to be a real address.
+// The POC's product sign-in, saved from the license form (`pocLogin: true`).
+// Optional on the wire so a license can still be saved without touching the
+// account. The dashboard sends no password (a new account gets a generated
+// one); the admin API may. Either way the email it signs in with has to be a
+// real address.
+const wantsPocLogin = (req) => req.body.pocLogin === true || Boolean(req.body.password);
 const pocLogin = [
+  body('pocLogin').optional().isBoolean({ strict: true }).withMessage('pocLogin must be true or false'),
   body('password')
     .optional({ values: 'falsy' })
     .isString()
     .isLength({ min: MIN_PASSWORD_LENGTH, max: 128 })
     .withMessage(`Password must be between ${MIN_PASSWORD_LENGTH} and 128 characters`),
   body('clientUserId')
-    .if(body('password').notEmpty())
+    .if((value, { req }) => wantsPocLogin(req))
     .isEmail()
     .withMessage('Enter a valid email address'),
   body('companyName')
-    .if(body('password').notEmpty())
+    .if((value, { req }) => wantsPocLogin(req))
     .notEmpty()
     .withMessage('Company name is required'),
 ];

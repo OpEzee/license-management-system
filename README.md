@@ -87,7 +87,8 @@ server connects to a local MongoDB at `mongodb://127.0.0.1:27017`, database
 | `npm run restore-db` | Loads the newest backup folder into MongoDB (upserts by id, safe to re-run) |
 | `npm run restore-db -- <folder>` | Loads a specific backup folder |
 | `npm run set-max-screens -- --min <n>` | One-off migration before deploying max screens. Gives every license without a limit `max(n, machines it already has)`. Add `--dry-run` to preview. Safe to re-run |
+| `npm run strip-client-passwords` | One-off migration: removes the readable client passwords older records still carry, so only the bcrypt hash is left. Add `-- --dry-run` to preview. Safe to re-run, and worth re-running after restoring an old backup |
 | `npm run create-admin` | Creates or resets the dashboard admin login |
 | `npm test` | Runs the API tests against a throwaway database on the local MongoDB |
 
-The `backups/` folder is git-ignored because it contains password hashes.
+The `backups/` folder is git-ignored because it contains password hashes. Backups taken before `strip-client-passwords` ran also contain readable client passwords: delete them, or keep them somewhere locked down.

@@ -157,7 +157,7 @@ Database `MONGODB_DB` (default `opezee_licenses`). Every document's `_id` is a h
 | ---------- | --------------- | ------- | ----- |
 | `licenses` | licenseKey, clientName, companyName, clientUserId, productName, soldBy, duration, startDate, expiryDate, deactivated, status, maxScreens, claimedMachines `[{ machineNumber, firstSeenAt, lastSeenAt }]`, screens `{ used, limit, plan, updatedAt }`, createdAt, updatedAt | `licenseKey` (unique), `clientUserId`, `productName`, `createdAt` desc | Legacy docs may hold `clientEmail` in place of `clientUserId`, or no `startDate` (in which case `createdAt` is used). A missing `maxScreens` counts as 1. Until `set-max-screens` runs, old docs may still hold the single `machineNumber` left by the one-machine lock. `screens` exists only on Digital Diya licenses that have synced |
 | `products` | name, description, createdAt, updatedAt | `createdAt` desc | Name uniqueness is checked case-insensitively in code |
-| `clients` | clientName, companyName, username, passwordHash, password, createdAt, updatedAt | `username` | `password` is a readable copy that the admin views see. `passwordHash` (bcrypt) is what login checks |
+| `clients` | clientName, companyName, username, passwordHash, createdAt, updatedAt | `username` | Hash only: `passwordHash` (bcrypt) is what login checks, and no readable copy is stored. Generated passwords (`clientService.generatePassword()`) are returned once by the call that made them. Records from before this may still carry a readable `password`; `npm run strip-client-passwords` removes it, and a reset or password change drops it too |
 | `admins` | email, name, passwordHash, createdAt, updatedAt | `email` (unique) | |
 | `emailConfigs` | email, label, isDefault, createdAt | `email` | Any number may be default. The last default cannot be deleted while other addresses remain |
 | `settings` | `_id: 'branding'`: logo (data URL), mimeType, fileName, updatedAt | | Upserted on first logo upload |
@@ -168,6 +168,7 @@ Database `MONGODB_DB` (default `opezee_licenses`). Every document's `_id` is a h
 
 - `npm run backup-db` exports every collection to `backups/mongodb-<timestamp>/<collection>.json`, plus a `_manifest.json`. Dates are written as `{ "$date": "<ISO>" }`.
 - `npm run restore-db [-- <folder>]` loads the newest backup folder, or the one named. It does this with `replaceOne` upserts keyed on `_id`, so re-running it duplicates nothing, and documents missing from the backup are left alone. It also reads the one-off Firestore export taken before the migration.
+- Backups taken before `strip-client-passwords` ran still hold readable client passwords. Restoring one brings the field back into the database (no API returns it), so run `npm run strip-client-passwords` again after such a restore.
 
 ## 7. Client (dashboard) architecture
 

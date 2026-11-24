@@ -7,19 +7,18 @@ import ShareLicenseModal from './ShareLicenseModal'
 import DatePicker from './DatePicker'
 import ConfirmDialog from './ConfirmDialog'
 import ClaimedMachines from './ClaimedMachines'
+import ShowOncePassword from './ShowOncePassword'
 import { isDigitalDiya } from '../hooks/useLicenses'
 import { DURATIONS, formatDate, previewExpiry, toDateInput } from '../services/format'
 
 const today = () => new Date().toISOString().slice(0, 10)
 
-const MIN_PASSWORD_LENGTH = 8
 const MAX_SCREENS_LIMIT = 100
 
 const EMPTY = {
   clientName: '',
   clientUserId: '',
   companyName: '',
-  password: '',
   productName: '',
   soldBy: '',
   duration: '1_year',
@@ -38,12 +37,15 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const accountsNamed = (clients, name) =>
   clients.filter((c) => c.hasLogin && c.username && sameName(c.clientName, name))
 
-/** The POC's sign-in fields, as an existing account fills them in. */
-const POC_FIELDS = ['clientUserId', 'companyName', 'password']
+/**
+ * The POC's sign-in fields, as an existing account fills them in. No password:
+ * the server keeps only its hash, generates one for a new account and shows
+ * it once after saving.
+ */
+const POC_FIELDS = ['clientUserId', 'companyName']
 const pocFieldsOf = (account) => ({
   clientUserId: account?.username || '',
   companyName: account?.companyName || '',
-  password: account?.password || '',
 })
 
 function validateForm(values) {
@@ -54,9 +56,6 @@ function validateForm(values) {
   if (!email) errors.clientUserId = 'Email is required'
   else if (!EMAIL_PATTERN.test(email)) errors.clientUserId = 'Enter a valid email address'
   if (!values.companyName.trim()) errors.companyName = 'Company is required'
-  if (!values.password) errors.password = 'Password is required'
-  else if (values.password.length < MIN_PASSWORD_LENGTH)
-    errors.password = `Password must be at least ${MIN_PASSWORD_LENGTH} characters`
   if (!values.soldBy.trim()) errors.soldBy = 'Sold by is required'
   if (!values.startDate) errors.startDate = 'Start date is required'
 
@@ -92,6 +91,8 @@ export default function LicenseFormModal({
   onSubmit,
   // (machineNumber) => the updated license, or null if the release failed.
   onReleaseMachine,
+  // (account) => the new generated password, or null if the reset failed.
+  onResetPassword,
 }) {
   const isEdit = Boolean(license)
   const [values, setValues] = useState(EMPTY)
@@ -106,11 +107,17 @@ export default function LicenseFormModal({
   const [machines, setMachines] = useState([])
   const [releaseTarget, setReleaseTarget] = useState(null)
   const [releasing, setReleasing] = useState(false)
+  const [resetTarget, setResetTarget] = useState(null)
+  const [resetting, setResetting] = useState(false)
+  // { username, password } after a reset: shown here once, then gone for good.
+  const [resetDone, setResetDone] = useState(null)
 
   useEffect(() => {
     if (!open) return
     setMachines(license?.claimedMachines || [])
     setReleaseTarget(null)
+    setResetTarget(null)
+    setResetDone(null)
     setErrors({})
     setAutoFilled(pocFieldsOf(null))
     setDeactivated(Boolean(license?.deactivated))
@@ -120,8 +127,6 @@ export default function LicenseFormModal({
             clientName: license.clientName || '',
             clientUserId: license.clientUserId || '',
             companyName: license.companyName || '',
-            // Filled from the POC's account below, once the accounts are loaded.
-            password: '',
             productName: license.productName || '',
             soldBy: license.soldBy || '',
             duration: license.duration || 'custom',
@@ -138,7 +143,7 @@ export default function LicenseFormModal({
     setErrors((prev) => ({ ...prev, [name]: undefined }))
   }
 
-  // Picking an existing POC fills in their email, company and password. Each
+  // Picking an existing POC fills in their email and company. Each
   // field is only replaced while it is empty or still holds what was filled
   // in this way — never something the admin typed.
   const [autoFilled, setAutoFilled] = useState(pocFieldsOf(null))
@@ -157,22 +162,12 @@ export default function LicenseFormModal({
       clientName: undefined,
       clientUserId: undefined,
       companyName: undefined,
-      password: undefined,
     }))
   }
   const setPocName = (name) => {
     const matches = accountsNamed(clients, name)
     fillFromAccount(matches.length === 1 ? matches[0] : null, { clientName: name })
   }
-
-  // Editing: the password lives on the POC's account, not the license, and the
-  // accounts may arrive after the form opens.
-  useEffect(() => {
-    if (!open || !license?.clientUserId) return
-    const account = clients.find((c) => c.hasLogin && sameName(c.username, license.clientUserId))
-    if (!account?.password) return
-    setValues((prev) => (prev.password ? prev : { ...prev, password: account.password }))
-  }, [open, license, clients])
 
   // For a preset duration the expiry is derived; the field becomes read-only.
   const computedExpiry = useMemo(
@@ -185,6 +180,17 @@ export default function LicenseFormModal({
   // saved license, whose slots are what /verify actually counts.
   const showMaxScreens = !isDigitalDiya(values)
   const showMachines = isEdit && !isDigitalDiya(license)
+
+  const confirmReset = async () => {
+    setResetting(true)
+    try {
+      const password = await onResetPassword(resetTarget)
+      if (password) setResetDone({ username: resetTarget.username, password })
+      setResetTarget(null)
+    } finally {
+      setResetting(false)
+    }
+  }
 
   const confirmRelease = async () => {
     setReleasing(true)
@@ -210,6 +216,17 @@ export default function LicenseFormModal({
   const email = values.clientUserId.trim().toLowerCase()
   // Several POCs share this name: the picker below sets the email to one.
   const chosenAccount = pocAccounts.find((c) => sameName(c.username, email))
+  // The account this email signs in with, whatever name it is under.
+  const emailAccount = EMAIL_PATTERN.test(email)
+    ? clients.find((c) => c.hasLogin && c.id && sameName(c.username, email))
+    : null
+  // Editing onto a new email: the server moves the account when this license
+  // is its only one, and only otherwise makes a new one with a new password.
+  const movingAccount =
+    isEdit &&
+    !emailAccount &&
+    !sameName(email, license.clientUserId) &&
+    clients.some((c) => c.hasLogin && sameName(c.username, license.clientUserId))
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -226,10 +243,11 @@ export default function LicenseFormModal({
         {
           clientName: values.clientName.trim(),
           // The POC's sign-in for the product. The server saves these on the
-          // POC's account and links the license to it by the email.
+          // POC's account and links the license to it by the email; a new
+          // account gets a generated password, returned once.
           clientUserId: email,
           companyName: values.companyName.trim(),
-          password: values.password,
+          pocLogin: true,
           productName: values.productName.trim(),
           soldBy: values.soldBy.trim(),
           duration: values.duration,
@@ -280,7 +298,7 @@ export default function LicenseFormModal({
       }
       // Escape reaches every open dialog, so while the release confirmation is
       // up this one ignores it rather than closing underneath.
-      onClose={submitting || releaseTarget ? () => {} : onClose}
+      onClose={submitting || releaseTarget || resetTarget ? () => {} : onClose}
       maxWidth="max-w-2xl"
     >
       <form onSubmit={handleSubmit} noValidate>
@@ -431,24 +449,42 @@ export default function LicenseFormModal({
             {fieldError('companyName')}
           </div>
 
-          {/* Shown in plain text: the admin sets it
-              and reads it back to the POC, who signs in to the product with it. */}
+          {/* No password field: the server generates it and shows it once,
+              and keeps only its hash, so it can never be read back here. */}
           <div>
-            <label className="label" htmlFor="password">
-              Password <span className="text-red-500">*</span>
-            </label>
-            <input
-              id="password"
-              type="text"
-              autoComplete="off"
-              spellCheck="false"
-              className={`input ${errors.password ? 'border-red-400' : ''}`}
-              placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
-              value={values.password}
-              onChange={(e) => setField('password', e.target.value)}
-            />
-            {fieldError('password')}
+            <p className="label">Product sign-in</p>
+            {emailAccount ? (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700">
+                <p className="text-sm text-slate-600 dark:text-slate-300">
+                  Signs in with their existing password
+                </p>
+                <button
+                  type="button"
+                  className="btn-secondary px-2.5 py-1 text-xs"
+                  onClick={() => setResetTarget(emailAccount)}
+                  disabled={resetting || submitting}
+                >
+                  Reset password
+                </button>
+              </div>
+            ) : (
+              <p className="rounded-lg border border-dashed border-slate-300 px-3 py-2 text-sm text-slate-600 dark:border-slate-700 dark:text-slate-300">
+                {movingAccount
+                  ? 'Their sign-in moves to this email and keeps its password. If other licenses still use the old email, a new password is generated and shown once after you save.'
+                  : 'A password will be generated and shown once after you save.'}
+              </p>
+            )}
           </div>
+
+          {resetDone && (
+            <div className="sm:col-span-2">
+              <ShowOncePassword
+                label="New POC password"
+                value={resetDone.password}
+                username={resetDone.username}
+              />
+            </div>
+          )}
 
           <div>
             <label className="label" htmlFor="soldBy">
@@ -569,6 +605,20 @@ export default function LicenseFormModal({
         confirmLabel="Release"
         onConfirm={confirmRelease}
         onCancel={() => setReleaseTarget(null)}
+      />
+
+      <ConfirmDialog
+        open={Boolean(resetTarget)}
+        busy={resetting}
+        title="Reset this POC's password?"
+        message={
+          resetTarget
+            ? `${resetTarget.username}'s current password stops working on all their products straight away. A new one is generated and shown once.`
+            : ''
+        }
+        confirmLabel="Reset password"
+        onConfirm={confirmReset}
+        onCancel={() => setResetTarget(null)}
       />
     </Modal>
   )

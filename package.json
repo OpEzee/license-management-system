@@ -16,7 +16,8 @@
     "check-mail": "node server/scripts/checkMail.js",
     "backup-db": "node server/scripts/backupDb.js",
     "restore-db": "node server/scripts/restoreBackup.js",
-    "set-max-screens": "node server/scripts/setMaxScreens.js"
+    "set-max-screens": "node server/scripts/setMaxScreens.js",
+    "strip-client-passwords": "node server/scripts/stripClientPasswords.js"
   },
   "engines": {
     "node": ">=18"

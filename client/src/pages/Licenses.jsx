@@ -7,10 +7,11 @@ import LicenseFormModal from '../components/LicenseFormModal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import Modal from '../components/Modal'
 import LicenseKey from '../components/LicenseKey'
+import ShowOncePassword from '../components/ShowOncePassword'
 import { EmptyState, ErrorState, TableSkeleton } from '../components/States'
 import { useToast } from '../components/Toast'
 import useLicenses, { filterByProduct, filterLicenses, useClients, useProducts } from '../hooks/useLicenses'
-import { licenseApi } from '../services/api'
+import { clientApi, licenseApi } from '../services/api'
 import { formatDate } from '../services/format'
 
 const COLUMNS = [
@@ -62,6 +63,8 @@ export default function Licenses() {
   const [deleting, setDeleting] = useState(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [created, setCreated] = useState(null)
+  // An edit that made a new POC account: { username, password }, shown once.
+  const [issued, setIssued] = useState(null)
 
   const visible = useMemo(
     () => filterLicenses(filterByProduct(licenses, product), search, status),
@@ -69,6 +72,7 @@ export default function Licenses() {
   )
   const digitalDiya = product === 'digital-diya'
   const copied = () => toast.success('License key copied to clipboard')
+  const passwordCopied = () => toast.success('Password copied to clipboard')
 
   const openCreate = () => {
     setEditing(null)
@@ -101,7 +105,11 @@ export default function Licenses() {
   const handleSubmit = async (values, { deactivated } = {}) => {
     try {
       if (editing) {
-        await licenseApi.update(editing.id, values)
+        const updated = await licenseApi.update(editing.id, values)
+        // Only when this edit created the POC's account (a new email).
+        if (updated.pocPassword) {
+          setIssued({ username: updated.clientUserId, password: updated.pocPassword })
+        }
         // The status dropdown only takes effect here, on Save Changes.
         const statusChanged =
           deactivated !== undefined && deactivated !== Boolean(editing.deactivated)
@@ -127,6 +135,18 @@ export default function Licenses() {
       toast.success(`${machineNumber} released`)
       await reload({ silent: true })
       return updated
+    } catch (err) {
+      toast.error(err.message)
+      return null
+    }
+  }
+
+  // The form shows the new password itself, inside the open popup.
+  const handleResetPassword = async (account) => {
+    try {
+      const password = await clientApi.resetPassword(account.id)
+      toast.success('Password reset')
+      return password
     } catch (err) {
       toast.error(err.message)
       return null
@@ -231,6 +251,7 @@ export default function Licenses() {
         onClose={closeForm}
         onSubmit={handleSubmit}
         onReleaseMachine={handleReleaseMachine}
+        onResetPassword={handleResetPassword}
       />
 
       <ConfirmDialog
@@ -250,7 +271,11 @@ export default function Licenses() {
       <Modal
         open={Boolean(created)}
         title="License created"
-        subtitle="Share this license key with your client for product activation."
+        subtitle={
+          created?.pocPassword
+            ? 'Share the license key and the POC password with your client.'
+            : 'Share this license key with your client for product activation.'
+        }
         onClose={() => setCreated(null)}
         maxWidth="max-w-md"
       >
@@ -264,6 +289,13 @@ export default function Licenses() {
                 <LicenseKey value={created.licenseKey} onCopied={copied} size="lg" />
               </div>
             </div>
+            {created.pocPassword && (
+              <ShowOncePassword
+                value={created.pocPassword}
+                username={created.clientUserId}
+                onCopied={passwordCopied}
+              />
+            )}
             <dl className="space-y-2 text-sm">
               {[
                 ['Client', created.clientName],
@@ -278,6 +310,28 @@ export default function Licenses() {
               ))}
             </dl>
             <button className="btn-primary w-full" onClick={() => setCreated(null)}>
+              Done
+            </button>
+          </div>
+        )}
+      </Modal>
+
+      {/* After an edit moved a license to a new email and made its account */}
+      <Modal
+        open={Boolean(issued)}
+        title="POC account created"
+        subtitle="Send this password to the POC. They sign in to the product with it."
+        onClose={() => setIssued(null)}
+        maxWidth="max-w-md"
+      >
+        {issued && (
+          <div className="space-y-4">
+            <ShowOncePassword
+              value={issued.password}
+              username={issued.username}
+              onCopied={passwordCopied}
+            />
+            <button className="btn-primary w-full" onClick={() => setIssued(null)}>
               Done
             </button>
           </div>

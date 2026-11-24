@@ -239,9 +239,8 @@ function PanelSkeleton({ title }) {
 
 /**
  * Insights worked out from the license list in the browser (see
- * services/dashboardStats.js). Total clients comes from the stats endpoint;
- * the client list is deliberately not loaded here, since it carries every
- * client's readable password.
+ * services/dashboardStats.js). Total clients comes from the stats endpoint,
+ * so the full client list is not loaded just to count it.
  */
 export default function Dashboard() {
   const { licenses, loading: licensesLoading, error: licensesError, reload: reloadLicenses } = useLicenses()

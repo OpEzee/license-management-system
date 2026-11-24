@@ -10,15 +10,20 @@ const { staffPin } = require('../utils/staffPin');
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
 /**
- * The license form carries the POC's sign-in for the product: a password
- * alongside the email and company. The account is saved first, so a clash
- * (an email or company already used by another POC) stops the license too.
+ * The license form saves the POC's sign-in for the product: the email and
+ * company, with `pocLogin: true`. The dashboard never sends a password; a new
+ * account gets a generated one. Admin API callers may still send `password`,
+ * which also counts as asking for the account. The account is saved first, so
+ * a clash (an email or company already used by another POC) stops the license.
  */
+const wantsPocLogin = (body) => body.pocLogin === true || Boolean(body.password);
+
 // licenseId: the license being edited (none on create) — the POC account's other
 // licenses are never changed from this one's form.
+// Resolves to the generated password when this save created the account.
 async function savePocFrom(body, previousEmail, licenseId) {
-  if (!body.password) return;
-  await clientService.savePocAccount({
+  if (!wantsPocLogin(body)) return null;
+  const { generatedPassword } = await clientService.savePocAccount({
     clientName: body.clientName,
     companyName: body.companyName,
     email: body.clientUserId,
@@ -26,12 +31,22 @@ async function savePocFrom(body, previousEmail, licenseId) {
     previousEmail,
     licenseId,
   });
+  return generatedPassword;
 }
 
+// Shown once: the password is stored only as a hash, so this response is the
+// only place it ever appears.
+const withPocPassword = (generated) => (generated ? { pocPassword: generated } : {});
+
 const create = asyncHandler(async (req, res) => {
-  await savePocFrom(req.body);
+  const generated = await savePocFrom(req.body);
   const license = await licenseService.createLicense(req.body);
-  res.status(201).json({ success: true, message: 'License created successfully', license });
+  res.status(201).json({
+    success: true,
+    message: 'License created successfully',
+    license,
+    ...withPocPassword(generated),
+  });
 });
 
 const list = asyncHandler(async (req, res) => {
@@ -51,12 +66,18 @@ const getOne = asyncHandler(async (req, res) => {
 const update = asyncHandler(async (req, res) => {
   // Before the POC account is saved, so a refused limit changes nothing.
   await licenseService.assertMaxScreensFits(req.params.id, req.body.maxScreens);
-  if (req.body.password) {
+  let generated = null;
+  if (wantsPocLogin(req.body)) {
     const current = await licenseService.getLicenseById(req.params.id);
-    await savePocFrom(req.body, current.clientUserId, req.params.id);
+    generated = await savePocFrom(req.body, current.clientUserId, req.params.id);
   }
   const license = await licenseService.updateLicense(req.params.id, req.body);
-  res.json({ success: true, message: 'License updated successfully', license });
+  res.json({
+    success: true,
+    message: 'License updated successfully',
+    license,
+    ...withPocPassword(generated),
+  });
 });
 
 const setStatus = asyncHandler(async (req, res) => {

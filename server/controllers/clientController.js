@@ -9,9 +9,21 @@ const list = asyncHandler(async (req, res) => {
   res.json({ success: true, count: clients.length, clients });
 });
 
+// generatedPassword appears only on the response that made it: it is not
+// stored readably, so it can never be fetched again.
 const create = asyncHandler(async (req, res) => {
-  const client = await clientService.createClient(req.body);
-  res.status(201).json({ success: true, message: 'Client added successfully', client });
+  const { client, generatedPassword } = await clientService.createClient(req.body);
+  res.status(201).json({
+    success: true,
+    message: 'Client added successfully',
+    client,
+    ...(generatedPassword ? { generatedPassword } : {}),
+  });
+});
+
+const resetPassword = asyncHandler(async (req, res) => {
+  const { client, generatedPassword } = await clientService.resetPassword(req.params.id);
+  res.json({ success: true, message: 'Password reset', client, generatedPassword });
 });
 
 const getOne = asyncHandler(async (req, res) => {
@@ -48,4 +60,4 @@ const login = asyncHandler(async (req, res) => {
   });
 });
 
-module.exports = { list, create, getOne, update, remove, login };
+module.exports = { list, create, getOne, update, remove, resetPassword, login };
