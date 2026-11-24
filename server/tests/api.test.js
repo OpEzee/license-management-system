@@ -1090,14 +1090,52 @@ const server = app.listen(0, async () => {
       (await call('POST', '/api/admin/change-password', {
         currentPassword: ADMIN.password, newPassword: 'short', confirmPassword: 'short',
       })).status === 400)
+    check('change-password needs a token',
+      (await call('POST', '/api/admin/change-password', {
+        currentPassword: ADMIN.password, newPassword: 'BrandNewPass1', confirmPassword: 'BrandNewPass1',
+      }, { auth: false })).status === 401)
+
+    // A second session, as from another tab or device, and a token signed the
+    // way tokens were before session versions existed (no `ver`).
+    const otherSession = (await call('POST', '/api/admin/login', ADMIN, { auth: false })).body.token
+    const jwt = require('jsonwebtoken')
+    const legacyToken = jwt.sign(
+      { sub: me.body.admin.id, email: ADMIN.email, role: 'admin' },
+      process.env.JWT_SECRET, { expiresIn: '1h' }
+    )
+    check('before any change, a token without a version counts as version 0',
+      (await call('GET', '/api/admin/me', null, { token: legacyToken })).status === 200)
+
+    const oldToken = token
     const changed = await call('POST', '/api/admin/change-password', {
       currentPassword: ADMIN.password, newPassword: 'BrandNewPass1', confirmPassword: 'BrandNewPass1',
     })
-    check('changes the password', changed.status === 200, changed.body)
+    check('changes the password and returns a fresh token',
+      changed.status === 200 && typeof changed.body.token === 'string' && changed.body.token !== oldToken,
+      changed.body)
+    const revoked = await call('GET', '/api/admin/me', null, { token: oldToken })
+    check('the token that made the change now gets 401',
+      revoked.status === 401 && revoked.body.code === 'INVALID_TOKEN', revoked.body)
+    check('another session from before the change gets 401',
+      (await call('GET', '/api/licenses', null, { token: otherSession })).status === 401)
+    check('an old token without a version gets 401 too',
+      (await call('GET', '/api/admin/me', null, { token: legacyToken })).status === 401)
+    token = changed.body.token
+    const fresh = await call('GET', '/api/admin/me')
+    check('the fresh token works', fresh.status === 200 && fresh.body.admin.email === ADMIN.email, fresh.body)
     check('the old password no longer works',
       (await call('POST', '/api/admin/login', ADMIN, { auth: false })).status === 401)
     check('the new password works',
       (await call('POST', '/api/admin/login', { email: ADMIN.email, password: 'BrandNewPass1' })).status === 200)
+
+    // npm run create-admin is the lock-out recovery path, so a reset revokes too.
+    const beforeReset = token
+    await adminService.upsertAdmin({ email: ADMIN.email, password: 'ResetPass123' })
+    check('a create-admin reset signs out existing sessions',
+      (await call('GET', '/api/admin/me', null, { token: beforeReset })).status === 401)
+    const afterReset = await call('POST', '/api/admin/login', { email: ADMIN.email, password: 'ResetPass123' }, { auth: false })
+    check('signing in after a reset works', afterReset.status === 200, afterReset.body)
+    token = afterReset.body.token
 
     console.log('\n-- email configuration --')
     const e1 = await call('POST', '/api/admin/emails', { email: 'first@test.com' })

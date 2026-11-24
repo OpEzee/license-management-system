@@ -74,7 +74,13 @@ client.interceptors.response.use(
 export const authApi = {
   login: (payload) => client.post('/admin/login', payload).then((r) => r.data),
   me: () => client.get('/admin/me').then((r) => r.data.admin),
-  changePassword: (payload) => client.post('/admin/change-password', payload).then((r) => r.data),
+  // The change signs out every older session, this one included, so the fresh
+  // token it returns replaces ours straight away.
+  changePassword: (payload) =>
+    client.post('/admin/change-password', payload).then((r) => {
+      if (r.data.token) setToken(r.data.token)
+      return r.data
+    }),
 }
 
 export const licenseApi = {

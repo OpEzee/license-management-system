@@ -87,6 +87,7 @@ request
 
 - The public set is listed in `PUBLIC_PATHS` in `server/server.js`. These paths skip the admin CORS check and the admin rate limiter.
 - In the dashboard, the token is kept in `localStorage` (`lm.token`). An axios interceptor attaches it to requests, and on a 401 it sends the user to `/login`.
+- **Session revocation:** each admin document has a `tokenVersion`, and each JWT carries it as `ver`. A missing value counts as 0 on either side. `requireAdmin` checks the signature, then looks the admin up and rejects a mismatched version with the same `401 INVALID_TOKEN` as an expired token. Change-password and a `create-admin` reset increment `tokenVersion`. Change-password returns a fresh token, which `authApi.changePassword` stores.
 
 ## 5. License domain model
 

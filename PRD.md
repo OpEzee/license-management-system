@@ -65,6 +65,7 @@ Without a central system, licenses live in spreadsheets and emails. Opezee canno
 | AUTH-4 | A wrong email and a wrong password return the same error, so the response does not reveal which accounts exist. |
 | AUTH-5 | Login is limited to 10 failed attempts per 15 minutes per IP. |
 | AUTH-6 | The admin account is created or reset with `npm run create-admin`. |
+| AUTH-7 | Changing the password, or resetting it with `npm run create-admin`, signs out every existing session. Older tokens get 401. Change-password returns a fresh token, so the admin who made the change stays signed in. |
 
 ### 5.2 Dashboard
 
