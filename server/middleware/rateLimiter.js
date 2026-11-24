@@ -46,4 +46,17 @@ const clientLoginLimiter = rateLimit({
   handler: json('Too many login attempts. Please try again in 15 minutes.'),
 });
 
-module.exports = { adminLimiter, verifyLimiter, loginLimiter, clientLoginLimiter };
+/**
+ * The staff PIN in front of a product's licence details. Four digits are few,
+ * so wrong guesses are capped hard; a right one does not count.
+ */
+const pinLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  handler: json('Too many PIN attempts. Please try again in 15 minutes.'),
+});
+
+module.exports = { adminLimiter, verifyLimiter, loginLimiter, clientLoginLimiter, pinLimiter };

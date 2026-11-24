@@ -2,7 +2,7 @@
 
 const bcrypt = require('bcryptjs');
 
-const { getDb, Timestamp } = require('../config/firebase');
+const { collection: getCollection, newId } = require('../config/db');
 const { ApiError } = require('../middleware/errorHandler');
 const licenseService = require('./licenseService');
 
@@ -11,12 +11,17 @@ const BCRYPT_ROUNDS = 12;
 const MIN_PASSWORD_LENGTH = 8;
 
 function collection() {
-  return getDb().collection(COLLECTION);
+  return getCollection(COLLECTION);
+}
+
+async function findOrThrow(id) {
+  const doc = await collection().findOne({ _id: String(id) });
+  if (!doc) throw new ApiError(404, 'Client not found', 'CLIENT_NOT_FOUND');
+  return doc;
 }
 
 function toIso(value) {
   if (!value) return null;
-  if (typeof value.toDate === 'function') return value.toDate().toISOString();
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
@@ -27,10 +32,9 @@ const normalizeUsername = (value) => String(value || '').trim().toLowerCase();
  * Never leaks passwordHash. The readable password is opt-in and is only passed
  * for admin-facing responses — never from the product login endpoint.
  */
-function toPublicClient(doc, { includePassword = false } = {}) {
-  const data = doc.data();
+function toPublicClient(data, { includePassword = false } = {}) {
   return {
-    id: doc.id,
+    id: data._id,
     clientName: data.clientName,
     companyName: data.companyName,
     username: data.username,
@@ -41,17 +45,13 @@ function toPublicClient(doc, { includePassword = false } = {}) {
 }
 
 async function findByUsername(username) {
-  const snap = await collection()
-    .where('username', '==', normalizeUsername(username))
-    .limit(1)
-    .get();
-  return snap.empty ? null : snap.docs[0];
+  return collection().findOne({ username: normalizeUsername(username) });
 }
 
 /** Usernames are the product's login identity, so they must be unique. */
 async function assertUsernameAvailable(username, exceptId) {
   const existing = await findByUsername(username);
-  if (existing && existing.id !== exceptId) {
+  if (existing && existing._id !== exceptId) {
     throw new ApiError(409, 'That username is already taken', 'USERNAME_TAKEN');
   }
 }
@@ -67,11 +67,11 @@ async function assertPocAvailable(clientName, exceptId) {
   const normalized = normalizeUsername(clientName);
   if (!normalized) return;
 
-  // Compared in code rather than with a where(): the stored value keeps its
-  // original casing, so an equality query would miss "Sajid" vs "sajid".
-  const snap = await collection().get();
-  const clash = snap.docs.find(
-    (doc) => doc.id !== exceptId && normalizeUsername(doc.data().clientName) === normalized
+  // Compared in code rather than with an equality query: the stored value
+  // keeps its original casing, so a query would miss "Sajid" vs "sajid".
+  const all = await collection().find({}, { projection: { clientName: 1 } }).toArray();
+  const clash = all.find(
+    (doc) => doc._id !== exceptId && normalizeUsername(doc.clientName) === normalized
   );
   if (clash) {
     throw new ApiError(409, 'That POC name is already taken', 'POC_TAKEN');
@@ -83,11 +83,11 @@ async function assertCompanyAvailable(companyName, exceptId) {
   const normalized = normalizeUsername(companyName);
   if (!normalized) return;
 
-  // Compared in code rather than with a where(): the stored value keeps its
-  // original casing, so an equality query would miss "ABC Pvt Ltd" vs "abc pvt ltd".
-  const snap = await collection().get();
-  const clash = snap.docs.find(
-    (doc) => doc.id !== exceptId && normalizeUsername(doc.data().companyName) === normalized
+  // Compared in code rather than with an equality query: the stored value
+  // keeps its original casing, so a query would miss "ABC Pvt Ltd" vs "abc pvt ltd".
+  const all = await collection().find({}, { projection: { companyName: 1 } }).toArray();
+  const clash = all.find(
+    (doc) => doc._id !== exceptId && normalizeUsername(doc.companyName) === normalized
   );
   if (clash) {
     throw new ApiError(409, 'That company name is already taken', 'COMPANY_TAKEN');
@@ -111,40 +111,39 @@ async function createClient({ clientName, companyName, username, password }) {
   await assertCompanyAvailable(companyName);
   assertPasswordStrength(password);
 
-  const ref = await collection().add({
+  const now = new Date();
+  const doc = {
+    _id: newId(),
     clientName,
     companyName,
     username: normalized,
     passwordHash: await bcrypt.hash(password, BCRYPT_ROUNDS),
     password,
-    createdAt: Timestamp.now(),
-    updatedAt: Timestamp.now(),
-  });
+    createdAt: now,
+    updatedAt: now,
+  };
+  await collection().insertOne(doc);
 
   // Licenses issued to this name before the account existed now belong to it,
   // so the Clients page shows one row rather than two and the product login
   // finds them.
   await licenseService.adoptUnlinkedLicenses(clientName, normalized, companyName);
 
-  return toPublicClient(await ref.get(), { includePassword: true });
-}
-
-async function getClientById(id) {
-  const doc = await collection().doc(id).get();
-  if (!doc.exists) throw new ApiError(404, 'Client not found', 'CLIENT_NOT_FOUND');
   return toPublicClient(doc, { includePassword: true });
 }
 
+async function getClientById(id) {
+  return toPublicClient(await findOrThrow(id), { includePassword: true });
+}
+
 async function updateClient(id, { clientName, companyName, username, password }) {
-  const ref = collection().doc(id);
-  const doc = await ref.get();
-  if (!doc.exists) throw new ApiError(404, 'Client not found', 'CLIENT_NOT_FOUND');
+  const doc = await findOrThrow(id);
 
   // Read before writing: this is what the licenses are currently matched on,
   // and it is needed again after the account has already been changed.
-  const previousUsername = doc.data().username;
+  const previousUsername = doc.username;
 
-  const updates = { updatedAt: Timestamp.now() };
+  const updates = { updatedAt: new Date() };
 
   if (clientName !== undefined) {
     await assertPocAvailable(clientName, id);
@@ -169,7 +168,7 @@ async function updateClient(id, { clientName, companyName, username, password })
     updates.password = password;
   }
 
-  await ref.update(updates);
+  await collection().updateOne({ _id: doc._id }, { $set: updates });
 
   // Their licenses have to follow the edit. A changed email in particular is
   // what licenses are matched on, so leaving them behind splits the Clients
@@ -181,19 +180,45 @@ async function updateClient(id, { clientName, companyName, username, password })
     ...(updates.companyName !== undefined ? { companyName: updates.companyName } : {}),
   });
 
-  return toPublicClient(await ref.get(), { includePassword: true });
+  return getClientById(doc._id);
+}
+
+/** How many licenses are filed under this POC email, leaving out the one being edited (if any). */
+async function licensesFiledUnder(username, exceptLicenseId) {
+  const user = normalizeUsername(username);
+  const licenses = await licenseService.listLicenses();
+  return licenses.filter(
+    (l) => l.id !== exceptLicenseId && normalizeUsername(l.clientUserId) === user
+  ).length;
 }
 
 /**
  * Creates or updates the POC account a license is filed under, from the
  * license form — which is where POC credentials are now entered.
  *
- * The account is found by the license's email. When none has that email but
- * the license was already filed under another one, that account is the POC
- * being edited, so it takes the new email (and its licenses follow) rather
- * than a second account being created for the same person.
+ * The form edits ONE license, so it never changes the others. An account is
+ * shared by every license with its email, and editing the account carries its
+ * name, company and email to all of them (updateClient → relinkClientLicenses),
+ * so the form only does that when this license is the account's only one:
+ *
+ * - The account is found by the license's email. When none has that email but
+ *   the license was filed under another one that holds no other license, that
+ *   account is this POC being edited and takes the new email. If other licenses
+ *   still use it, the new email is a new POC: a new account, and the others
+ *   stay where they are.
+ * - An account other licenses also use keeps its POC name and company; only
+ *   the password follows the form (it is one sign-in for that email).
+ *
+ * The Clients page edits the account itself, and there every license follows.
  */
-async function savePocAccount({ clientName, companyName, email, password, previousEmail }) {
+async function savePocAccount({
+  clientName,
+  companyName,
+  email,
+  password,
+  previousEmail,
+  licenseId,
+}) {
   const username = normalizeUsername(email);
   if (!username) throw new ApiError(400, 'Email is required', 'EMAIL_REQUIRED');
   if (!String(companyName || '').trim()) {
@@ -202,15 +227,16 @@ async function savePocAccount({ clientName, companyName, email, password, previo
 
   let doc = await findByUsername(username);
   if (!doc && previousEmail && normalizeUsername(previousEmail) !== username) {
-    doc = await findByUsername(previousEmail);
+    const previous = await findByUsername(previousEmail);
+    if (previous && !(await licensesFiledUnder(previousEmail, licenseId))) doc = previous;
   }
 
   if (!doc) return createClient({ clientName, companyName, username, password });
 
-  const data = doc.data();
-  return updateClient(doc.id, {
-    clientName,
-    companyName,
+  const data = doc;
+  const shared = (await licensesFiledUnder(data.username, licenseId)) > 0;
+  return updateClient(doc._id, {
+    ...(shared ? {} : { clientName, companyName }),
     username,
     // Re-hashing an unchanged password costs a bcrypt round for nothing.
     ...(password && password !== data.password ? { password } : {}),
@@ -218,13 +244,11 @@ async function savePocAccount({ clientName, companyName, email, password, previo
 }
 
 async function deleteClient(id) {
-  const ref = collection().doc(id);
-  const doc = await ref.get();
-  if (!doc.exists) throw new ApiError(404, 'Client not found', 'CLIENT_NOT_FOUND');
+  const doc = await findOrThrow(id);
 
   // Licenses are matched to a client by username, so removing the account
   // while licenses still point at it would strand them.
-  const username = doc.data().username;
+  const username = doc.username;
   const licenses = await licenseService.listLicenses();
   const inUse = licenses.some((l) => normalizeUsername(l.clientUserId) === username);
   if (inUse) {
@@ -235,7 +259,7 @@ async function deleteClient(id) {
     );
   }
 
-  await ref.delete();
+  await collection().deleteOne({ _id: doc._id });
   return { id };
 }
 
@@ -246,14 +270,14 @@ async function deleteClient(id) {
  *     and so credentials can be added for them
  */
 async function listClients() {
-  const [snap, licenses] = await Promise.all([
-    collection().orderBy('createdAt', 'desc').get(),
+  const [accounts, licenses] = await Promise.all([
+    collection().find().sort({ createdAt: -1 }).toArray(),
     licenseService.listLicenses(),
   ]);
 
   const rows = new Map();
 
-  snap.docs.forEach((doc) => {
+  accounts.forEach((doc) => {
     const client = toPublicClient(doc, { includePassword: true });
     rows.set(normalizeUsername(client.username), {
       ...client,
@@ -326,7 +350,7 @@ async function login({ username, password, productName }) {
   // Compare against a dummy hash when the username is unknown, so that a wrong
   // username and a wrong password take the same time to answer.
   const hash = doc
-    ? doc.data().passwordHash
+    ? doc.passwordHash
     : '$2a$12$invalidinvalidinvalidinvalidinvalidinvalidinvalidinvalidi';
   const ok = await bcrypt.compare(String(password), hash);
 

@@ -15,7 +15,7 @@ require('dotenv').config();
 const mailService = require('../services/mailService');
 
 const SAMPLE = {
-  licenseKey: 'OPEZ-TEST-0000-DEMO',
+  licenseKey: 'K7M2Q9',
   productName: 'Sample Product',
   clientName: 'Sample Client',
   companyName: 'Sample Company Ltd',

@@ -4,7 +4,7 @@ const FILTERS = [
   { value: 'expired', label: 'Expired' },
 ]
 
-export default function TableToolbar({ search, onSearch, status, onStatus, placeholder }) {
+export default function TableToolbar({ search, onSearch, status, onStatus, placeholder, children }) {
   return (
     <div className="flex flex-col gap-3 border-b border-slate-200 px-4 py-3 dark:border-slate-800 sm:flex-row sm:items-center sm:justify-between sm:px-5">
       <div className="relative w-full sm:max-w-xs">
@@ -26,6 +26,8 @@ export default function TableToolbar({ search, onSearch, status, onStatus, place
         />
       </div>
 
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+      {children}
       <div className="flex rounded-lg bg-slate-100 p-1 dark:bg-slate-800">
         {FILTERS.map((f) => (
           <button
@@ -39,6 +41,7 @@ export default function TableToolbar({ search, onSearch, status, onStatus, place
             {f.label}
           </button>
         ))}
+      </div>
       </div>
     </div>
   )

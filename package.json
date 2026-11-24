@@ -2,7 +2,7 @@
   "name": "opezee-license-management",
   "version": "1.0.0",
   "private": true,
-  "description": "Opezee License Management — admin dashboard (React) + license API (Express + Firestore) in one deployable service",
+  "description": "Opezee License Management — admin dashboard (React) + license API (Express + MongoDB) in one deployable service",
   "main": "server/server.js",
   "scripts": {
     "dev": "node scripts/dev.js",
@@ -12,7 +12,9 @@
     "start": "node server/server.js",
     "test": "node server/tests/api.test.js",
     "create-admin": "node server/scripts/createAdmin.js",
-    "check-mail": "node server/scripts/checkMail.js"
+    "check-mail": "node server/scripts/checkMail.js",
+    "backup-db": "node server/scripts/backupDb.js",
+    "restore-db": "node server/scripts/restoreBackup.js"
   },
   "engines": {
     "node": ">=18"
@@ -27,9 +29,9 @@
     "express": "^4.19.2",
     "express-rate-limit": "^7.4.0",
     "express-validator": "^7.2.0",
-    "firebase-admin": "^12.5.0",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.3",
+    "mongodb": "^6.22.0",
     "morgan": "^1.10.0",
     "nodemailer": "^10.0.10",
     "postcss": "^8.4.47",

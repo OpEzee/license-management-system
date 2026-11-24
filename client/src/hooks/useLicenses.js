@@ -85,6 +85,16 @@ export function useStats() {
 }
 
 /** Free-text search across client, company, user ID, product, key and seller. */
+// The Licenses page's product dropdown: Digital Diya on its own (its table
+// shows the screens each key runs on), or every other product.
+export const DIGITAL_DIYA = 'Digital Diya'
+export const isDigitalDiya = (license) =>
+  String(license.productName || '').trim().toLowerCase() === DIGITAL_DIYA.toLowerCase()
+
+export function filterByProduct(licenses, product) {
+  return licenses.filter((l) => (product === 'digital-diya' ? isDigitalDiya(l) : !isDigitalDiya(l)))
+}
+
 export function filterLicenses(licenses, search, status) {
   const q = search.trim().toLowerCase()
   return licenses.filter((l) => {

@@ -10,7 +10,6 @@ import { BrandingProvider } from './context/BrandingContext'
 import './index.css'
 
 ReactDOM.createRoot(document.getElementById('root')).render(
-  <React.StrictMode>
     <ThemeProvider>
       <BrowserRouter>
         <AuthProvider>
@@ -22,5 +21,4 @@ ReactDOM.createRoot(document.getElementById('root')).render(
         </AuthProvider>
       </BrowserRouter>
     </ThemeProvider>
-  </React.StrictMode>
 )

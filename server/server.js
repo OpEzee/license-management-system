@@ -13,7 +13,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const { initFirebase } = require('./config/firebase');
+const { initDb, settings: dbSettings } = require('./config/db');
 const licenseRoutes = require('./routes/licenseRoutes');
 const productRoutes = require('./routes/productRoutes');
 const clientRoutes = require('./routes/clientRoutes');
@@ -38,22 +38,56 @@ app.set('trust proxy', 1);
 // The dashboard is served from this same server in production, so the default
 // policy is relaxed exactly where that build needs it: the inline theme script
 // in index.html, Google Fonts, and logos stored as data URLs.
-app.use(
-  helmet({
-    contentSecurityPolicy: {
-      directives: {
-        defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "'unsafe-inline'"],
-        styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
-        fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
-        imgSrc: ["'self'", 'data:', 'blob:'],
-        connectSrc: ["'self'"],
-        objectSrc: ["'none'"],
-      },
+// ALLOW_HTTP=true: this server is reached over plain http:// (e.g. an EC2 test
+// without a domain). Then upgrade-insecure-requests must go — it makes the
+// browser fetch the dashboard's own scripts over https://, which nothing
+// answers, and the page stays blank. Served over https, it stays on.
+const allowHttp = process.env.ALLOW_HTTP === 'true';
+
+const cspDirectives = {
+  defaultSrc: ["'self'"],
+  scriptSrc: ["'self'", "'unsafe-inline'"],
+  styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+  fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+  imgSrc: ["'self'", 'data:', 'blob:'],
+  connectSrc: ["'self'"],
+  objectSrc: ["'none'"],
+  ...(allowHttp ? { upgradeInsecureRequests: null } : {}),
+};
+
+const strictHeaders = helmet({
+  contentSecurityPolicy: { directives: cspDirectives },
+  // Fonts and images are loaded cross-origin by the built dashboard.
+  crossOriginEmbedderPolicy: false,
+});
+
+/**
+ * The /client pages are the product-facing sign-in and license screens, and
+ * a product shows them inside a frame — an installed Electron app from
+ * file://, whose origin no frame-ancestors list can name. So those pages, and
+ * only those, may be framed: by anything, or by CLIENT_FRAME_ANCESTORS when it
+ * is set. The admin console keeps refusing to be framed.
+ */
+const clientFrameAncestors = (process.env.CLIENT_FRAME_ANCESTORS || '')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+const frameableHeaders = helmet({
+  contentSecurityPolicy: {
+    directives: {
+      ...cspDirectives,
+      frameAncestors: clientFrameAncestors.length ? clientFrameAncestors : null,
     },
-    // Fonts and images are loaded cross-origin by the built dashboard.
-    crossOriginEmbedderPolicy: false,
-  })
+  },
+  crossOriginEmbedderPolicy: false,
+  frameguard: false,
+});
+
+const isClientPage = (p) => p === '/client' || p.startsWith('/client/');
+
+app.use((req, res, next) =>
+  isClientPage(req.path) ? frameableHeaders(req, res, next) : strictHeaders(req, res, next)
 );
 
 // A logo upload is a base64 image and legitimately exceeds the request size
@@ -96,6 +130,9 @@ const allowedOrigins = [...new Set([...configuredOrigins, ...developmentLanOrigi
 const PUBLIC_PATHS = [
   '/licenses/verify',
   '/licenses/sync',
+  '/licenses/details',
+  '/licenses/digital-diya/validate',
+  '/licenses/digital-diya/sync',
   '/licenses/poc',
   '/licenses/email',
   '/clients/login',
@@ -183,14 +220,17 @@ function checkAuthConfig() {
   }
 }
 
-function start() {
+async function start() {
   checkAuthConfig();
 
   try {
-    initFirebase();
+    await initDb();
+    const { uri, dbName } = dbSettings();
+    // Hide any user:password@ part of the connection string.
+    console.log(`Connected to MongoDB at ${uri.replace(/\/\/[^@/]*@/, '//***@')} (database "${dbName}")`);
   } catch (err) {
-    console.error('\n[startup] Firebase initialization failed:', err.message);
-    console.error('[startup] Copy .env.example to .env and fill in your credentials.\n');
+    console.error('\n[startup] Could not connect to MongoDB:', err.message);
+    console.error('[startup] Make sure MongoDB is running and MONGODB_URI in .env is correct.\n');
     process.exit(1);
   }
 
@@ -201,7 +241,7 @@ function start() {
     lanAddresses().forEach((ip) => console.log(`                    http://${ip}:${PORT}`));
     console.log(`Allowed admin origins: ${allowedOrigins.join(', ')}`);
     console.log(
-      'Public endpoints: POST /api/licenses/verify, POST /api/licenses/sync, POST /api/clients/login'
+      'Public endpoints: POST /api/licenses/verify, POST /api/licenses/sync, POST /api/clients/login, POST /api/licenses/digital-diya/validate, POST /api/licenses/digital-diya/sync'
     );
   });
 }

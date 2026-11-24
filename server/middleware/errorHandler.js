@@ -19,7 +19,7 @@ function errorHandler(err, req, res, next) {
   const isProd = process.env.NODE_ENV === 'production';
   const status = err.status && err.status >= 400 && err.status < 600 ? err.status : 500;
 
-  // Internal failures (Firestore, network, bugs) are logged but never leaked.
+  // Internal failures (database, network, bugs) are logged but never leaked.
   if (status >= 500 || !err.expose) {
     console.error('[error]', req.method, req.originalUrl, err);
   }

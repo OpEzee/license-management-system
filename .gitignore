@@ -4,3 +4,6 @@ dist/
 *.local
 serviceAccountKey.json
 .DS_Store
+
+# Database exports (contain password hashes)
+backups/

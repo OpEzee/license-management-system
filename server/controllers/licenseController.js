@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const licenseService = require('../services/licenseService');
 const clientService = require('../services/clientService');
 const mailService = require('../services/mailService');
@@ -12,7 +13,9 @@ const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, ne
  * alongside the email and company. The account is saved first, so a clash
  * (an email or company already used by another POC) stops the license too.
  */
-async function savePocFrom(body, previousEmail) {
+// licenseId: the license being edited (none on create) — the POC account's other
+// licenses are never changed from this one's form.
+async function savePocFrom(body, previousEmail, licenseId) {
   if (!body.password) return;
   await clientService.savePocAccount({
     clientName: body.clientName,
@@ -20,6 +23,7 @@ async function savePocFrom(body, previousEmail) {
     email: body.clientUserId,
     password: body.password,
     previousEmail,
+    licenseId,
   });
 }
 
@@ -46,7 +50,7 @@ const getOne = asyncHandler(async (req, res) => {
 const update = asyncHandler(async (req, res) => {
   if (req.body.password) {
     const current = await licenseService.getLicenseById(req.params.id);
-    await savePocFrom(req.body, current.clientUserId);
+    await savePocFrom(req.body, current.clientUserId, req.params.id);
   }
   const license = await licenseService.updateLicense(req.params.id, req.body);
   res.json({ success: true, message: 'License updated successfully', license });
@@ -93,17 +97,13 @@ const remove = asyncHandler(async (req, res) => {
   res.json({ success: true, message: 'License deleted successfully' });
 });
 
-/** Products may send either spelling of the machine identifier. */
-const readMachineNumber = (body) => body.machineNumber ?? body.machine_number;
-
 /**
  * Public endpoint used by the product. Response shapes are fixed by contract,
  * and no internal fields (document id, client user id, timestamps) are exposed.
  */
 const verify = asyncHandler(async (req, res) => {
   const { licenseKey, productName } = req.body;
-  const machineNumber = readMachineNumber(req.body);
-  const result = await licenseService.checkLicense({ licenseKey, productName, machineNumber });
+  const result = await licenseService.checkLicense({ licenseKey, productName });
 
   if (result.outcome === 'not_found') {
     return res.status(404).json({
@@ -118,17 +118,6 @@ const verify = asyncHandler(async (req, res) => {
       success: false,
       valid: false,
       message: 'License is not valid for this product',
-    });
-  }
-
-  // The key is already in use on another machine. The machine it belongs to is
-  // deliberately not named back: that would hand out a value an attacker could
-  // simply replay.
-  if (result.outcome === 'machine_mismatch') {
-    return res.status(403).json({
-      success: false,
-      valid: false,
-      message: 'License is already in use on another machine',
     });
   }
 
@@ -186,11 +175,173 @@ const verify = asyncHandler(async (req, res) => {
       clientName: result.license.clientName,
       companyName: result.license.companyName,
       productName: result.license.productName,
-      machineNumber: result.license.machineNumber,
       startDate: result.license.startDate,
       expiryDate: result.license.expiryDate,
       status: 'active',
     },
+  });
+});
+
+/**
+ * The licence details a product shows its staff behind a PIN (the hosted
+ * /client/pin page). The PIN is the server's CLIENT_PIN; the answer is the
+ * whole record — POC, email, company, dates and status — whatever the status,
+ * since staff check an expired licence too. Nothing is changed.
+ */
+const PIN_PATTERN = /^\d{4,8}$/;
+
+function pinMatches(given) {
+  const expected = String(process.env.CLIENT_PIN || '').trim();
+  const a = Buffer.from(String(given));
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+const details = asyncHandler(async (req, res) => {
+  if (!PIN_PATTERN.test(String(process.env.CLIENT_PIN || '').trim())) {
+    return res.status(503).json({ success: false, code: 'PIN_NOT_CONFIGURED', message: 'The PIN is not set up on the license server.' });
+  }
+  if (!pinMatches(req.body.pin)) {
+    return res.status(401).json({ success: false, code: 'WRONG_PIN', message: 'The PIN is incorrect.' });
+  }
+
+  const result = await licenseService.checkLicense({
+    licenseKey: req.body.licenseKey,
+    productName: req.body.productName,
+  });
+  if (result.outcome === 'not_found') {
+    return res.status(404).json({ success: false, code: 'LICENSE_NOT_FOUND', message: 'That licence key was not found.' });
+  }
+  if (result.outcome === 'product_mismatch') {
+    return res.status(403).json({ success: false, code: 'PRODUCT_MISMATCH', message: 'That licence key is for another product.' });
+  }
+
+  const { license } = result;
+  return res.status(200).json({
+    success: true,
+    license: {
+      licenseKey: license.licenseKey,
+      clientName: license.clientName,
+      clientUserId: license.clientUserId,
+      companyName: license.companyName,
+      productName: license.productName,
+      startDate: license.startDate,
+      expiryDate: license.expiryDate,
+      status: license.status,
+    },
+  });
+});
+
+/** The one product the dedicated validate endpoint answers for. */
+const DIGITAL_DIYA = 'Digital Diya';
+
+const VALIDATE_MESSAGES = {
+  valid: 'License is valid',
+  expired: 'License has expired',
+  pending: 'License has not started yet',
+  deactivated: 'License has been deactivated',
+};
+
+/**
+ * Digital Diya's own check: is this key valid, yes or no. The product is fixed
+ * here rather than sent, so a key issued for any other product is refused, and
+ * the other products keep using /verify and /sync exactly as before.
+ *
+ * Every answer has the same flat shape — `valid`, `status`, `message` — so the
+ * caller only ever needs to read `valid`.
+ */
+const validateDigitalDiya = asyncHandler(async (req, res) => {
+  const result = await licenseService.checkLicense({
+    licenseKey: req.body.licenseKey,
+    productName: DIGITAL_DIYA,
+  });
+
+  if (result.outcome === 'not_found') {
+    return res.status(404).json({
+      success: false,
+      valid: false,
+      status: 'invalid',
+      message: 'Invalid license key',
+    });
+  }
+
+  if (result.outcome === 'product_mismatch') {
+    return res.status(403).json({
+      success: false,
+      valid: false,
+      status: 'invalid',
+      message: `License is not valid for ${DIGITAL_DIYA}`,
+    });
+  }
+
+  const { license } = result;
+  return res.status(200).json({
+    success: true,
+    valid: result.outcome === 'valid',
+    status: license.status,
+    message: VALIDATE_MESSAGES[result.outcome],
+    license: {
+      licenseKey: license.licenseKey,
+      productName: license.productName,
+      clientName: license.clientName,
+      // The POC's email: the product's status page shows it beside the POC.
+      clientUserId: license.clientUserId,
+      companyName: license.companyName,
+      startDate: license.startDate,
+      expiryDate: license.expiryDate,
+    },
+  });
+});
+
+/**
+ * Digital Diya's auto-sync: the same check as validateDigitalDiya, in the flat
+ * shape of /sync, for the product to call on a timer and notice when its key
+ * expires or is switched off. The product owns the interval; nothing is
+ * scheduled here. Every answer carries `checkedAt`.
+ */
+const syncDigitalDiya = asyncHandler(async (req, res) => {
+  const result = await licenseService.checkLicense({
+    licenseKey: req.body.licenseKey,
+    productName: DIGITAL_DIYA,
+  });
+  const checkedAt = new Date().toISOString();
+
+  if (result.outcome === 'not_found') {
+    return res.status(404).json({
+      success: false,
+      valid: false,
+      status: 'invalid',
+      message: 'Invalid license key',
+      checkedAt,
+    });
+  }
+
+  if (result.outcome === 'product_mismatch') {
+    return res.status(403).json({
+      success: false,
+      valid: false,
+      status: 'invalid',
+      message: `License is not valid for ${DIGITAL_DIYA}`,
+      checkedAt,
+    });
+  }
+
+  let { license } = result;
+  if (req.body.screens) license = await licenseService.recordScreens(license, req.body.screens);
+  return res.status(200).json({
+    success: true,
+    valid: result.outcome === 'valid',
+    status: license.status,
+    message: VALIDATE_MESSAGES[result.outcome],
+    licenseKey: license.licenseKey,
+    productName: license.productName,
+    startDate: license.startDate,
+    expiryDate: license.expiryDate,
+    screens: license.screens,
+    // Who to contact, as validate gives it: a POC renamed (or given an email) in
+    // the console reaches the product's status page at the next sync.
+    license: { clientName: license.clientName, clientUserId: license.clientUserId },
+    checkedAt,
   });
 });
 
@@ -201,8 +352,7 @@ const verify = asyncHandler(async (req, res) => {
  */
 const sync = asyncHandler(async (req, res) => {
   const { licenseKey, productName } = req.body;
-  const machineNumber = readMachineNumber(req.body);
-  const result = await licenseService.checkLicense({ licenseKey, productName, machineNumber });
+  const result = await licenseService.checkLicense({ licenseKey, productName });
   const checkedAt = new Date().toISOString();
 
   if (result.outcome === 'not_found') {
@@ -225,16 +375,6 @@ const sync = asyncHandler(async (req, res) => {
     });
   }
 
-  if (result.outcome === 'machine_mismatch') {
-    return res.status(403).json({
-      success: false,
-      valid: false,
-      status: 'machine_mismatch',
-      message: 'License is already in use on another machine',
-      checkedAt,
-    });
-  }
-
   const messages = {
     valid: 'License is valid',
     expired: 'License has expired',
@@ -249,7 +389,6 @@ const sync = asyncHandler(async (req, res) => {
     message: messages[result.outcome],
     licenseKey: result.license.licenseKey,
     productName: result.license.productName,
-    machineNumber: result.license.machineNumber,
     startDate: result.license.startDate,
     expiryDate: result.license.expiryDate,
     checkedAt,
@@ -258,8 +397,8 @@ const sync = asyncHandler(async (req, res) => {
 
 /**
  * Two self-service endpoints the product calls to correct the details it holds.
- * Both authenticate the same way: the license key plus the machine that claimed
- * it. Kept as separate endpoints so a product can change one without having to
+ * Both authenticate the way /verify does: by the license key. Kept as separate
+ * endpoints so a product can change one without having to
  * send, and risk overwriting, the other.
  */
 const updatePoc = asyncHandler(async (req, res) => {
@@ -268,7 +407,6 @@ const updatePoc = asyncHandler(async (req, res) => {
   const pocName = req.body.pocName ?? req.body.poc_name ?? req.body.clientName;
   const license = await licenseService.updateLicenseContact({
     licenseKey,
-    machineNumber: readMachineNumber(req.body),
     productName,
     clientName: pocName,
   });
@@ -281,7 +419,6 @@ const updatePoc = asyncHandler(async (req, res) => {
       pocName: license.clientName,
       email: license.clientUserId,
       productName: license.productName,
-      machineNumber: license.machineNumber,
     },
   });
 });
@@ -290,7 +427,6 @@ const updateEmail = asyncHandler(async (req, res) => {
   const { licenseKey, productName, email } = req.body;
   const license = await licenseService.updateLicenseContact({
     licenseKey,
-    machineNumber: readMachineNumber(req.body),
     productName,
     clientUserId: email,
   });
@@ -303,12 +439,12 @@ const updateEmail = asyncHandler(async (req, res) => {
       pocName: license.clientName,
       email: license.clientUserId,
       productName: license.productName,
-      machineNumber: license.machineNumber,
     },
   });
 });
 
 module.exports = {
+  details,
   create,
   list,
   stats,
@@ -319,6 +455,8 @@ module.exports = {
   mailStatus,
   remove,
   verify,
+  validateDigitalDiya,
+  syncDigitalDiya,
   updatePoc,
   updateEmail,
   sync,

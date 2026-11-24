@@ -6,7 +6,7 @@ const { body, param } = require('express-validator');
 const controller = require('../controllers/licenseController');
 const { validate } = require('../middleware/validate');
 const { requireAdmin } = require('../middleware/auth');
-const { verifyLimiter } = require('../middleware/rateLimiter');
+const { verifyLimiter, pinLimiter } = require('../middleware/rateLimiter');
 const { DURATION_KEYS } = require('../utils/licenseDates');
 const { MIN_PASSWORD_LENGTH } = require('../services/clientService');
 
@@ -70,32 +70,69 @@ const keyCheck = [
     .matches(/^[A-Za-z0-9\s-]+$/)
     .withMessage('License key contains invalid characters'),
   body('productName').optional().trim().escape().isLength({ max: 120 }),
-  // Identifies the machine the product is installed on. Optional on the wire so
-  // a key that has never been claimed still verifies, but once a key is claimed
-  // the service refuses any request that does not carry the matching value.
-  body('machineNumber')
-    .optional({ values: 'falsy' })
-    .trim()
-    .isLength({ max: 128 })
-    .withMessage('Machine number is too long')
-    .matches(/^[A-Za-z0-9._:-]+$/)
-    .withMessage('Machine number contains invalid characters'),
-  body('machine_number')
-    .optional({ values: 'falsy' })
-    .trim()
-    .isLength({ max: 128 })
-    .withMessage('Machine number is too long')
-    .matches(/^[A-Za-z0-9._:-]+$/)
-    .withMessage('Machine number contains invalid characters'),
+  // A key is not tied to a machine. Products built before that may still send
+  // machineNumber; it is accepted and ignored.
 ];
 
 // --- Public (product-facing) -------------------------------------------------
 // Mounted before the admin guard, so products never need a token.
 router.post('/verify', verifyLimiter, keyCheck, validate, controller.verify);
+// The licence details behind the staff PIN (hosted /client/pin page).
+router.post(
+  '/details',
+  pinLimiter,
+  keyCheck,
+  body('pin').isString().withMessage('PIN is required').isLength({ max: 8 }),
+  validate,
+  controller.details
+);
 router.post('/sync', verifyLimiter, keyCheck, validate, controller.sync);
 
+// Digital Diya's own pair: a yes/no check, and the auto-sync it polls. Only
+// the key is read: the product is fixed server-side, so a key for any other
+// product is refused. Declared before the admin guard and the `/:id` routes so
+// neither swallows the paths.
+router.post(
+  '/digital-diya/validate',
+  verifyLimiter,
+  keyCheck[0],
+  validate,
+  controller.validateDigitalDiya
+);
+// The sync may also carry the screens the key runs on (screen app 1.4.13):
+// { used, limit, plan } — limit null when the plan sets none.
+const screensCheck = [
+  body('screens').optional({ values: 'null' }).isObject().withMessage('screens must be an object'),
+  body('screens.used')
+    .if(body('screens').isObject())
+    .isInt({ min: 0, max: 10000 })
+    .withMessage('screens.used must be a whole number')
+    .toInt(),
+  body('screens.limit')
+    .if(body('screens').isObject())
+    .optional({ values: 'null' })
+    .isInt({ min: 1, max: 10000 })
+    .withMessage('screens.limit must be a whole number')
+    .toInt(),
+  body('screens.plan')
+    .if(body('screens').isObject())
+    .optional({ values: 'null' })
+    .isString()
+    .trim()
+    .isLength({ max: 40 })
+    .withMessage('screens.plan is too long'),
+];
+router.post(
+  '/digital-diya/sync',
+  verifyLimiter,
+  keyCheck[0],
+  ...screensCheck,
+  validate,
+  controller.syncDigitalDiya
+);
+
 // Self-service: the product corrects its own contact details. Authenticated by
-// the license key and the machine that claimed it, so no admin token is needed.
+// the license key, so no admin token is needed.
 // Declared here, before the admin guard and before the `/:id` routes, so the
 // paths are not swallowed by either.
 router.put(
