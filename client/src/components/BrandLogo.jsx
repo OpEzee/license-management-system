@@ -1,7 +1,7 @@
 import { useBranding } from '../context/BrandingContext'
 
 /**
- * Renders the logo stored in Firestore. Until it loads — or if none has been
+ * Renders the logo stored in the database. Until it loads — or if none has been
  * uploaded yet — a plain wordmark stands in, so the header is never empty.
  */
 export default function BrandLogo({ className = 'h-10 w-auto', textClassName = 'text-lg' }) {

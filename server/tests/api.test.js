@@ -1,7 +1,7 @@
 /*
  * End-to-end API tests. Runs the real Express app, routes, validators and
- * service layer against an in-memory Firestore stand-in, so no credentials and
- * no network access are needed. Run with: npm test
+ * service layer against a throwaway database on the local MongoDB server
+ * (created fresh and dropped afterwards). Run with: npm test
  */
 process.env.NODE_ENV = 'test'
 process.env.CORS_ORIGIN = 'http://localhost:5173'
@@ -17,69 +17,21 @@ process.env.CLIENT_PIN = '1968'
 const path = require('path')
 const BACKEND = path.resolve(__dirname, '..')
 
-// ---- fake firestore ---------------------------------------------------------
-let seq = 0
-const store = new Map() // collectionName -> Map(id -> data)
+// ---- database ---------------------------------------------------------------
+// A throwaway database on the local MongoDB server, dropped when the run ends.
+// Override the server with MONGODB_URI if it is not on the default port.
+process.env.MONGODB_DB = `opezee_licenses_test_${process.pid}_${Date.now()}`
 
-function coll(name) {
-  if (!store.has(name)) store.set(name, new Map())
-  return store.get(name)
-}
+const db = require(path.join(BACKEND, 'config/db.js'))
 
-function makeQuery(name, filters = [], order = null, limit = null) {
-  return {
-    where: (f, op, v) => makeQuery(name, [...filters, [f, op, v]], order, limit),
-    orderBy: (f, dir) => makeQuery(name, filters, [f, dir], limit),
-    limit: (n) => makeQuery(name, filters, order, n),
-    async get() {
-      let docs = [...coll(name).entries()]
-        .filter(([, data]) => filters.every(([f, , v]) => data[f] === v))
-        .map(([id, data]) => ({ id, data: () => data, exists: true, ref: docRef(name, id) }))
-      if (order) {
-        const [field, dir] = order
-        docs.sort((a, b) => {
-          const av = a.data()[field]?.toMillis?.() ?? 0
-          const bv = b.data()[field]?.toMillis?.() ?? 0
-          return dir === 'desc' ? bv - av : av - bv
-        })
-      }
-      if (limit) docs = docs.slice(0, limit)
-      return { empty: docs.length === 0, docs, size: docs.length }
-    },
+async function dropTestDb() {
+  try {
+    await db.getDb().dropDatabase()
+  } catch (e) {
+    console.error('  could not drop test database:', e.message)
   }
+  await db.closeDb().catch(() => {})
 }
-
-function docRef(name, id) {
-  return {
-    id,
-    async get() {
-      return { id, exists: coll(name).has(id), data: () => coll(name).get(id), ref: docRef(name, id) }
-    },
-    async set(data, options = {}) {
-      coll(name).set(id, options.merge ? { ...coll(name).get(id), ...data } : { ...data })
-    },
-    async update(patch) {
-      coll(name).set(id, { ...coll(name).get(id), ...patch })
-    },
-    async delete() {
-      coll(name).delete(id)
-    },
-  }
-}
-
-const fakeCollection = (name) => ({
-  ...makeQuery(name),
-  async add(doc) {
-    const id = `doc${++seq}`
-    coll(name).set(id, { ...doc })
-    return { id, get: async () => ({ id, exists: true, data: () => coll(name).get(id) }) }
-  },
-  doc: (id) => docRef(name, id),
-})
-
-const firebase = require(path.join(BACKEND, 'config/firebase.js'))
-firebase.getDb = () => ({ collection: fakeCollection })
-firebase.initFirebase = () => ({ collection: fakeCollection })
 
 const adminService = require(path.join(BACKEND, 'services/adminService.js'))
 const app = require(path.join(BACKEND, 'server.js'))
@@ -104,6 +56,12 @@ const TINY_PNG =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
 
 const server = app.listen(0, async () => {
+  try {
+    await db.initDb()
+  } catch (e) {
+    console.error('\nCannot reach MongoDB for the tests:', e.message, '\n')
+    process.exit(1)
+  }
   const base = `http://127.0.0.1:${server.address().port}`
   let token = null
 
@@ -1056,5 +1014,6 @@ const server = app.listen(0, async () => {
 
   console.log(`\n${passed} passed, ${failed} failed\n`)
   server.close()
+  await dropTestDb()
   process.exit(failed ? 1 : 0)
 })

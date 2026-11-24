@@ -1,6 +1,6 @@
 'use strict';
 
-const { getDb, Timestamp } = require('../config/firebase');
+const { collection } = require('../config/db');
 const { ApiError } = require('../middleware/errorHandler');
 
 const COLLECTION = 'settings';
@@ -9,19 +9,18 @@ const DOC_ID = 'branding';
 // Rendered only inside an <img src="...">, where an SVG cannot execute script.
 const ALLOWED_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml'];
 
-// Firestore caps a document at 1 MiB. Staying well under leaves room for the
-// other fields and any future branding settings.
+// The logo travels with every branding request, so it is kept small — far
+// under MongoDB's 16 MB document limit.
 const MAX_DATA_URL_LENGTH = 700_000;
 
 const DATA_URL_PATTERN = /^data:(image\/(?:png|jpeg|webp|svg\+xml));base64,([A-Za-z0-9+/]+={0,2})$/;
 
-function ref() {
-  return getDb().collection(COLLECTION).doc(DOC_ID);
+function settings() {
+  return collection(COLLECTION);
 }
 
 function toIso(value) {
   if (!value) return null;
-  if (typeof value.toDate === 'function') return value.toDate().toISOString();
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
@@ -61,10 +60,9 @@ function assertValidLogo(dataUrl) {
 }
 
 async function getBranding() {
-  const doc = await ref().get();
-  if (!doc.exists) return { logo: null, fileName: null, updatedAt: null };
+  const data = await settings().findOne({ _id: DOC_ID });
+  if (!data) return { logo: null, fileName: null, updatedAt: null };
 
-  const data = doc.data();
   return {
     logo: data.logo || null,
     fileName: data.fileName || null,
@@ -76,26 +74,29 @@ async function getBranding() {
 async function setLogo({ logo, fileName }) {
   const mimeType = assertValidLogo(logo);
 
-  await ref().set(
+  await settings().updateOne(
+    { _id: DOC_ID },
     {
-      logo,
-      mimeType,
-      fileName: fileName ? String(fileName).slice(0, 200) : null,
-      updatedAt: Timestamp.now(),
+      $set: {
+        logo,
+        mimeType,
+        fileName: fileName ? String(fileName).slice(0, 200) : null,
+        updatedAt: new Date(),
+      },
     },
-    { merge: true }
+    { upsert: true }
   );
 
   return getBranding();
 }
 
 async function clearLogo() {
-  const doc = await ref().get();
-  if (!doc.exists) return { logo: null, fileName: null, updatedAt: null };
+  const existing = await settings().findOne({ _id: DOC_ID }, { projection: { _id: 1 } });
+  if (!existing) return { logo: null, fileName: null, updatedAt: null };
 
-  await ref().set(
-    { logo: null, mimeType: null, fileName: null, updatedAt: Timestamp.now() },
-    { merge: true }
+  await settings().updateOne(
+    { _id: DOC_ID },
+    { $set: { logo: null, mimeType: null, fileName: null, updatedAt: new Date() } }
   );
 
   return getBranding();

@@ -223,7 +223,7 @@ function BrandingSettings() {
       </div>
 
       {/* <p className="text-xs text-slate-500 dark:text-slate-400">
-        PNG, JPEG, WebP or SVG, up to 500 KB. Stored in Firebase and applied across the console
+        PNG, JPEG, WebP or SVG, up to 500 KB. Stored in the database and applied across the console
         immediately — no redeploy needed.
       </p> */}
     </div>

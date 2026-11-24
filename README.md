@@ -63,3 +63,19 @@ flowchart TD
 5. Client enters the key in the product.
 6. Product verifies the license — valid keys unlock the product, invalid or expired keys are blocked.
 7. Product re-checks the license periodically while in use.
+
+## Database
+
+Data is stored in **MongoDB** (it previously lived in Firebase Firestore). By default the
+server connects to a local MongoDB at `mongodb://127.0.0.1:27017`, database
+`opezee_licenses`. Override with `MONGODB_URI` and `MONGODB_DB` in `.env`.
+
+| Command | What it does |
+| --- | --- |
+| `npm run backup-db` | Exports every collection to `backups/mongodb-<timestamp>/` as JSON |
+| `npm run restore-db` | Loads the newest backup folder into MongoDB (upserts by id, safe to re-run) |
+| `npm run restore-db -- <folder>` | Loads a specific backup folder |
+| `npm run create-admin` | Creates or resets the dashboard admin login |
+| `npm test` | Runs the API tests against a throwaway database on the local MongoDB |
+
+The `backups/` folder is git-ignored because it contains password hashes.

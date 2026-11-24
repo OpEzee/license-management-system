@@ -4,7 +4,7 @@ import { brandingApi } from '../services/api'
 const BrandingContext = createContext(null)
 
 /**
- * The console logo, stored in Firestore and served by the backend rather than
+ * The console logo, stored in MongoDB and served by the backend rather than
  * bundled into the build, so it can be changed from Settings without a redeploy.
  */
 export function BrandingProvider({ children }) {
