@@ -205,7 +205,7 @@ export default function Help() {
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {[
             ['Admin dashboard', 'This site, for Opezee staff.'],
-            ['Server + database', 'One for all products, on Firebase Firestore.'],
+            ['Server + database', 'One for all products, on MongoDB.'],
             ['Opezee product', "The kiosk, game or app running on the client's machine."],
             ['Client account', 'The email and password the client signs in to the product with.'],
           ].map(([name, text]) => (

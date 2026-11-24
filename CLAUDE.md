@@ -8,13 +8,14 @@ Claude Code reads this file at the start of every session in this repo. It holds
 
 ## Project in one line
 
-This is the admin dashboard (React 18 + Vite + Tailwind) and license API (Express 4 + Firestore) that Opezee uses to issue licenses for its products. Products call public endpoints to verify a license and re-sync it every hour. Each license is locked to one machine.
+This is the admin dashboard (React 18 + Vite + Tailwind) and license API (Express 4 + MongoDB) that Opezee uses to issue licenses for its products. Products call public endpoints to verify a license and re-sync it every hour. Each license is locked to one machine.
 
 ## Environment
 
 - The developer works on Windows at `C:\projects\licence-management-system`, editing in VS Code. Give shell commands that work in PowerShell, and use `npm` scripts in preference to bash-only commands.
 - Use Node 20, as pinned in `.nvmrc`. The project supports Node 18 and later.
 - There is one `.env` at the root. Never print it, commit it or edit its secrets.
+- The database is MongoDB. `npm run dev`, `npm start` and `npm test` all need a running MongoDB server: by default `mongodb://127.0.0.1:27017`, database `opezee_licenses`. Override them with `MONGODB_URI` and `MONGODB_DB`. The server exits at start-up if it cannot connect.
 
 ## Commands
 
@@ -28,7 +29,10 @@ This is the admin dashboard (React 18 + Vite + Tailwind) and license API (Expres
 | Build for production | `npm run build`, then `npm start` (port 5000) |
 | Create or reset the admin | `npm run create-admin` |
 | Check SMTP | `npm run check-mail [address]` |
-| Run in Docker | `docker build -t opezee-lms .` then `docker run --env-file .env -p 5000:5000 opezee-lms` |
+| Back up the database | `npm run backup-db` (writes `backups/mongodb-<timestamp>/`, git-ignored) |
+| Restore the newest backup | `npm run restore-db` |
+| Restore a specific backup | `npm run restore-db -- <folder>` |
+| Run in Docker | `docker build -t opezee-lms .` then `docker run --env-file .env -p 5000:5000 opezee-lms`. `MONGODB_URI` must reach MongoDB from inside the container: use `host.docker.internal`, not `127.0.0.1`. |
 
 **Definition of done:** `npm test` passes, `npm run build` succeeds, and `README.md` / `PRD.md` are updated if behaviour or scope changed.
 
@@ -41,7 +45,9 @@ This is the admin dashboard (React 18 + Vite + Tailwind) and license API (Expres
 
 ## Rules for server changes
 
-1. Respect the layers. Routes hold validation, controllers shape HTTP responses, and services own Firestore and the business rules. Never call Firestore from a controller or a route.
+1. Respect the layers. Routes hold validation, controllers shape HTTP responses, and services own MongoDB access and the business rules. Services reach the database only through `collection()` from `server/config/db.js`. Never touch the database from a controller or a route.
+   - Document `_id`s are hex strings from `newId()`, not `ObjectId`s, because records carried over from Firestore kept their ids. Query by `{ _id: String(id) }`.
+   - A new field the services look up on every request gets an index in `ensureIndexes()`.
 2. Validate every input with express-validator. Text inputs get `.trim().escape()` and a max length. Optional form fields use `.optional({ values: 'falsy' })`.
 3. For expected errors, throw `new ApiError(status, message, CODE)`. Responses look like `{ success, message, code, errors? }`, and never include a stack trace.
 4. Public routes go **above** `router.use(requireAdmin)`. They must also be added to `PUBLIC_PATHS` in `server/server.js`, and each one needs a rate limiter.
@@ -62,13 +68,12 @@ This is the admin dashboard (React 18 + Vite + Tailwind) and license API (Expres
 
 ## Tests
 
-- All tests live in `server/tests/api.test.js`, which runs against an in-memory Firestore fake.
+- All tests live in `server/tests/api.test.js`. They run against a throwaway database (`opezee_licenses_test_<pid>_<time>`) on the local MongoDB server and drop it at the end. There is no fake, so MongoDB must be running. Set `MONGODB_URI` if it is not on the default port.
 - Every new or changed endpoint needs tests for:
   - success
   - validation (400)
   - no token (401)
   - each error code
-- If a new endpoint needs a Firestore query the fake lacks, extend the fake.
 
 ## Git
 
@@ -84,5 +89,5 @@ This is the admin dashboard (React 18 + Vite + Tailwind) and license API (Expres
 ## Current priorities
 
 1. Build the Clients page (`client/src/pages/Clients.jsx`, its route and sidebar entry). The backend `/api/clients` CRUD already exists.
-2. Repo clean-up: remove `feedback.txt` (it belongs to another project), fix `.claude/launch.json` (it points to a missing `frontend/` folder), and correct the README's list of public endpoints.
+2. Repo clean-up: remove `feedback.txt` (it belongs to another project) and correct the README's list of public endpoints.
 3. Add an admin action that releases a license's machine lock.

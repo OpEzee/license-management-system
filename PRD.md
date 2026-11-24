@@ -5,7 +5,7 @@
 | Product      | Opezee License Management System (LMS)   |
 | Owner        | Opezee                                   |
 | Status       | v1.0 built; hardening and gap-closing    |
-| Last updated | 17 November 2026                         |
+| Last updated | 24 November 2026                         |
 
 ---
 
@@ -17,7 +17,7 @@ It is one deployable service with three parts (see `ARCHITECTURE.md` for how the
 
 - a React admin dashboard
 - a Node.js + Express API
-- Firebase Firestore as the database
+- MongoDB as the database: a local server in development, and a hosted database such as MongoDB Atlas in production
 
 ## 2. Problem
 
@@ -110,7 +110,7 @@ Without a central system, licenses live in spreadsheets and emails. Opezee canno
 | SET-1 | A dark/light mode toggle. The choice is saved per device and applied before first paint. First-time visitors follow their OS setting. |
 | SET-2 | Change password, which needs the current password, a new password and a confirmation. |
 | SET-3 | Email IDs: add, edit, delete and set a default. The first email added becomes the default. The default cannot be deleted while other emails exist. |
-| SET-4 | Console logo upload: PNG, JPEG, WebP or SVG, up to 500 KB. It is stored in Firestore `settings/branding`. With no logo, the console shows an "OpEzee" wordmark. |
+| SET-4 | Console logo upload: PNG, JPEG, WebP or SVG, up to 500 KB. It is stored in the MongoDB `settings` collection, document `branding`. With no logo, the console shows an "OpEzee" wordmark. |
 
 ### 5.7 Product-facing API (public, no admin token)
 
@@ -135,12 +135,13 @@ Without a central system, licenses live in spreadsheets and emails. Opezee canno
 | Area          | Requirement |
 | ------------- | ----------- |
 | Security      | Helmet CSP is on. Admin CORS is restricted to `CORS_ORIGIN` plus same-origin. Input is validated and escaped with express-validator. JSON bodies are capped at 100 KB (1 MB for the logo). Responses never include stack traces. The server refuses to start without a `JWT_SECRET` of 16+ characters. |
-| Secrets       | `.env` and the service-account JSON are git-ignored. Firebase credentials stay on the server only. |
+| Secrets       | `.env` is git-ignored. It holds `MONGODB_URI`, with any database credentials, and `JWT_SECRET`. So is `backups/`, whose database exports contain password hashes. The connection string stays on the server only. |
+| Data          | MongoDB (`MONGODB_URI`, `MONGODB_DB`). The server refuses to start if it cannot connect. `npm run backup-db` exports every collection to JSON, and `npm run restore-db` loads a backup back in. The restore is idempotent, upserting by id. |
 | Rate limits   | Admin API: 300 requests per 15 minutes. Admin login: 10 per 15 minutes. Client login: 30 per 15 minutes. Verify, sync, poc and email: 20 per minute. All limits are per IP. |
 | Performance   | Verify and sync answer in under 500 ms (p95) on the Render free tier once warm. |
 | Availability  | `GET /health` is used for Render's health check. |
 | Compatibility | Node 18+ (20 recommended). The dashboard supports the current Chrome, Edge, Firefox and Safari. |
-| Testing       | `npm test` runs the end-to-end API suite against an in-memory Firestore, with no credentials. It must pass before merging. |
+| Testing       | `npm test` runs the end-to-end API suite against a throwaway database on a local MongoDB server, and drops that database afterwards. It needs a running MongoDB but no credentials. It must pass before merging. |
 
 ## 7. Known gaps / open items
 
@@ -148,7 +149,7 @@ Without a central system, licenses live in spreadsheets and emails. Opezee canno
 | -- | ---- | ----- |
 | G1 | **There is no Clients page in the dashboard.** | The README, sidebar requirement (DASH-2) and hooks expect `client/src/pages/Clients.jsx`, but neither the file nor its `/clients` route in `App.jsx` exists. The backend endpoints are already in place. |
 | G2 | `feedback.txt` belongs to the "Light a Lamp" project. | Move it to that repo or delete it. |
-| G3 | `.claude/launch.json` points at a `frontend/` folder that does not exist. | Change it to `npm run dev` at the root. |
+| G3 | ~~`.claude/launch.json` points at a `frontend/` folder that does not exist.~~ | Done: it now runs `npm run dev` at the root. |
 | G4 | The README's auth section lists only 3 public endpoints. | `/licenses/poc` and `/licenses/email` are public too. |
 | G5 | The README mentions an `example-game/` folder that is not in the repo. | Add the folder or remove the reference. |
 | G6 | Machine lock reset. | There is no admin action to release a machine claim, for example when a client replaces hardware. |
@@ -168,5 +169,6 @@ Without a central system, licenses live in spreadsheets and emails. Opezee canno
 | ----- | ----- | ------ |
 | 1 | Login, Dashboard, Licenses, Products, Settings, the verify/sync/login API | Done |
 | 2 | Email sharing, branding, machine lock, POC self-service, Render deploy | Done |
-| 3 | Clients page (G1), repo clean-up (G2–G5), CI | Next |
-| 4 | Machine-lock reset (G6), audit log (G7), expiry reminders (G8) | Planned |
+| 3 | Firestore → MongoDB migration: data layer on the `mongodb` driver, backup and restore scripts | Done |
+| 4 | Clients page (G1), repo clean-up (G2, G4, G5), CI with a MongoDB service | Next |
+| 5 | Machine-lock reset (G6), audit log (G7), expiry reminders (G8) | Planned |
