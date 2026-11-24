@@ -37,7 +37,7 @@ Checked against the repo on **24 November 2026**, on branch `production` at `f9f
 | 3 | Deploy prerequisites | **High** | Hosted pages take `&machine=` (`productLink.js:61`). Product builds sending `machineNumber` can't be checked from this repo. No sign the migration has run | Ship product updates, then `backup-db` → `set-max-screens -- --min 5` on production |
 | 4 | Local commits not on GitHub | **High** | 7 commits (`4f9ee2d` … `f9fd18f`); `production` is ahead of `origin` by 7 | Push, and open a PR to `main` (`main` is at `921ebdc`) |
 | 5 | Hosted MongoDB on Render | **High** | `render.yaml:28` has `sync: false` and a comment saying to use Atlas. The actual value is in the Render dashboard and can't be checked from here | Set an Atlas `MONGODB_URI` and allow Render's IPs |
-| 6 | CI workflow | Medium | No `.github/workflows/` folder. `npm test` needs a running MongoDB | Add `ci.yml` with a `mongo` service container, running `npm test` and `npm run build` |
+| 6 | CI workflow | Done | `.github/workflows/ci.yml`: a `mongo:7` service, then `npm ci` → `npm test` → `npm run build` → `npm audit --omit=dev --audit-level=high`, on `main` and `production`. Steps checked locally; the workflow hasn't run on GitHub yet | Push, and watch the first run |
 | 7 | Clients page | Medium | `client/src/pages/Clients.jsx` missing (PRD G1). The `/api/clients` CRUD exists | Build the page after #1, so it never handles readable passwords |
 | 8 | README: setup, env table, API reference | Medium | README sections stop at Overview, Use Cases, Flow, Max screens and Database. There's no setup, environment table or API reference | Write all three. `CLAUDE.md` says the README holds them |
 | 9 | Dead code and stray files | Low | `feedback.txt` and `correction.txt` are gone. Still left: unused `daysUntil` (`format.js:41`) and `durationLabel` (`:60`), unused `licenseService.listClients` (`licenseService.js:613`), 8 commented-out JSX blocks (e.g. `Settings.jsx:225, 424, 671`), stale `.dockerignore:13–14` | Remove them in one tidy-up commit, and update `CLAUDE.md:93` and PRD G2, G4 and G5 |
@@ -63,7 +63,7 @@ Checked against the repo on **24 November 2026**, on branch `production` at `f9f
 | Performance | Every `/verify` and `/sync` reads the whole `clients` collection | `licenseService.js:43` `clientDirectory()`, called at `:464` | M | Medium |
 | Performance | Stats and the Dashboard load every license to count them | `licenseService.js:591`; `Dashboard.jsx:247` | M | Low |
 | Performance | One 669 kB JS chunk, with no route-level code splitting | `App.jsx` (no `lazy`); build output | S | Low |
-| Testing | No CI, so tests only run on a developer's machine | No `.github/workflows/` | M | **High** |
+| Testing | ~~No CI, so tests only run on a developer's machine~~ Done | `.github/workflows/ci.yml` | M | Done |
 | Testing | No browser or end-to-end tests. UI and dark mode have never been checked in a real browser | No Playwright or Cypress config | L | Medium |
 | Testing | Client unit tests cover only the dashboard helpers | `client/tests/` has 1 file | M | Low |
 | Code quality | Large files that are hard to review | `api.test.js` 1200 lines, `Settings.jsx` 704, `licenseService.js` 677, `LicenseFormModal.jsx` 578, `licenseController.js` 513 | M | Low |
@@ -79,6 +79,6 @@ Checked against the repo on **24 November 2026**, on branch `production` at `f9f
 5. **Ship product builds that send `machineNumber`**, and pass `&machine=` to the hosted pages (Pending #3).
 6. **Production data:** run `backup-db`, then `set-max-screens -- --min 5`, then `strip-client-passwords` (Pending #3).
 7. **Render and GitHub:** set an Atlas `MONGODB_URI`, push the 7 commits, and open a PR to `main` (Pending #4, #5).
-8. **CI:** add `ci.yml` with a `mongo` service container, running `npm test` and `npm run build` (Pending #6).
+8. ~~**CI:** add `ci.yml` with a `mongo` service container~~ Done: test, build and audit on every push and PR to `main` and `production` (Pending #6).
 9. **Clients page:** build `Clients.jsx`, its route and its sidebar entry (Pending #7).
 10. **Expiry reminders and a renew action** (PRD G8 and the Help workaround).

@@ -45,7 +45,8 @@ licence-management-system/
 ├── scripts/dev.js            Runs nodemon + vite together
 ├── vite.config.mjs           root=client, out=dist, /api proxy, PostCSS inline
 ├── Dockerfile                Production container image
-└── render.yaml               Render blueprint (one web service)
+├── render.yaml               Render blueprint (one web service)
+└── .github/workflows/ci.yml  CI: mongo:7 service, then test, build, audit
 ```
 
 `backups/` (written by `npm run backup-db`) is git-ignored and Docker-ignored, because it holds password hashes.
@@ -192,7 +193,20 @@ In every target, the server exits at start-up if it cannot reach MongoDB. Once r
 
 `server/tests/api.test.js` loads the real app, with its real routes, validators, services and `config/db.js`, and runs it against a real MongoDB. It sets `MONGODB_DB` to a throwaway `opezee_licenses_test_<pid>_<time>` database and drops that database when the run ends. Nothing is faked, so a MongoDB server must be reachable: the local default, or `MONGODB_URI`. If it isn't, the suite exits straight away. The tests need no secrets, and SMTP is forced off so no real email is sent.
 
-There is no CI workflow in the repository yet. One would need a `mongo` service container for `npm test`.
+`client/tests/dashboardStats.test.mjs` unit-tests the Dashboard's pure helpers. It loads them through Vite's SSR loader, because the client is ESM that plain Node cannot load. `npm test` runs the server suite and then `npm run test:client`.
+
+### CI
+
+`.github/workflows/ci.yml` runs on every push and pull request to `main` and `production`:
+
+| | |
+| --- | --- |
+| Database | A `mongo:7` service container on port 27017, health-checked with `mongosh` before the steps start. `MONGODB_URI=mongodb://localhost:27017`. The run sets its own `MONGODB_DB`, as a fallback only, because the server suite always creates and drops its own throwaway database |
+| Env | Dummy values only (`JWT_SECRET`; `SMTP_*` blank). No repository secrets are used |
+| Steps | Node 20 (from `.nvmrc`, with the npm cache) → `npm ci` → `npm test` → `npm run build` → `npm audit --omit=dev --audit-level=high` |
+| Limits | 15-minute timeout. A newer push to the same branch or PR cancels the older run. The token is read-only |
+
+The audit step fails the run on any new high or critical advisory in production dependencies. Moderate ones are reported but don't fail it.
 
 ## 11. Extension points
 
