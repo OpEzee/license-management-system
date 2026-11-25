@@ -6,8 +6,12 @@ const adminService = require('../services/adminService');
 /**
  * Requires a valid admin bearer token. Applied to every admin API; the
  * product-facing /verify and /sync endpoints are mounted outside this guard.
+ *
+ * A good signature is not enough: the token must also be from the admin's
+ * current session generation, so a password change signs out every older
+ * session. That costs one indexed lookup per admin request.
  */
-function requireAdmin(req, res, next) {
+async function requireAdmin(req, res, next) {
   const header = req.headers.authorization || '';
   const [scheme, token] = header.split(' ');
 
@@ -17,6 +21,7 @@ function requireAdmin(req, res, next) {
 
   try {
     const payload = adminService.verifyToken(token);
+    await adminService.assertCurrentSession(payload);
     req.admin = { id: payload.sub, email: payload.email };
     return next();
   } catch (err) {

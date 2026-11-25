@@ -7,6 +7,7 @@ import Dashboard from './pages/Dashboard'
 import Licenses from './pages/Licenses'
 import Products from './pages/Products'
 import Settings from './pages/Settings'
+import Help from './pages/Help'
 import Login from './pages/Login'
 import ClientLogin from './pages/client/ClientLogin'
 import ClientActivate from './pages/client/ClientActivate'
@@ -38,6 +39,7 @@ export default function App() {
           <Route path="licenses" element={<Licenses />} />
           <Route path="products" element={<Products />} />
           <Route path="settings" element={<Settings />} />
+          <Route path="help" element={<Help />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Route>

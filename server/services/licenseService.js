@@ -10,6 +10,14 @@ const {
 
 const COLLECTION = 'licenses';
 
+// How many machines one key may run on. Licenses written before the limit
+// existed have no field and count as the default.
+const DEFAULT_MAX_SCREENS = 1;
+const MAX_SCREENS_LIMIT = 100;
+
+/** Machine numbers are compared trimmed and case-insensitively, and stored that way. */
+const normalizeMachine = (value) => String(value || '').trim().toLowerCase();
+
 function collection() {
   return getCollection(COLLECTION);
 }
@@ -34,7 +42,7 @@ const normalizeUserId = (value) => String(value || '').trim().toLowerCase();
  */
 async function clientDirectory() {
   const docs = await getCollection('clients')
-    .find({}, { projection: { username: 1, clientName: 1, companyName: 1 } })
+    .find({}, { projection: DIRECTORY_FIELDS })
     .toArray();
   const map = new Map();
   docs.forEach((data) => {
@@ -44,6 +52,43 @@ async function clientDirectory() {
       companyName: data.companyName,
     });
   });
+  return map;
+}
+
+const DIRECTORY_FIELDS = { username: 1, clientName: 1, companyName: 1 };
+
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** The user ID toPublicLicense links a license by, including the legacy field. */
+const linkedUserIdOf = (doc) => doc.clientUserId || doc.clientEmail || '';
+
+/**
+ * The directory for ONE license: just its linked account, in the same shape
+ * as clientDirectory(), so toPublicLicense reads it identically. This is what
+ * /verify, /sync and the other single-license reads use, instead of loading
+ * every client on each call.
+ *
+ * Usernames are stored lowercased and trimmed, so the indexed exact match
+ * nearly always hits. Records carried over from Firestore may not be, and
+ * clientDirectory() matched those after normalising them; the
+ * case-insensitive fallback keeps that, and only runs on a miss.
+ */
+async function linkedClientDirectory(doc) {
+  const key = normalizeUserId(linkedUserIdOf(doc));
+  const map = new Map();
+  if (!key) return map;
+
+  const clients = getCollection('clients');
+  const account =
+    (await clients.findOne({ username: key }, { projection: DIRECTORY_FIELDS })) ||
+    (await clients.findOne(
+      { username: { $regex: `^\\s*${escapeRegex(key)}\\s*$`, $options: 'i' } },
+      { projection: DIRECTORY_FIELDS }
+    ));
+
+  if (account && account.username) {
+    map.set(key, { clientName: account.clientName, companyName: account.companyName });
+  }
   return map;
 }
 
@@ -110,6 +155,14 @@ function toPublicLicense(data, directory) {
     // Digital Diya only: how many screen-app PCs run on this key, as its
     // server last reported on sync. Null until it has.
     screens: toScreens(data.screens),
+    // The machines /verify and /sync have admitted, out of maxScreens. Not to
+    // be confused with `screens` above, which Digital Diya reports itself.
+    maxScreens: Number.isInteger(data.maxScreens) ? data.maxScreens : DEFAULT_MAX_SCREENS,
+    claimedMachines: (data.claimedMachines || []).map((m) => ({
+      machineNumber: m.machineNumber,
+      firstSeenAt: toIso(m.firstSeenAt),
+      lastSeenAt: toIso(m.lastSeenAt),
+    })),
   };
 }
 
@@ -198,6 +251,8 @@ async function createLicense(payload) {
     deactivated: false,
     // Stored for convenience when browsing the database; the API always recomputes.
     status: computeStatus(startTs, expiryTs, false),
+    maxScreens: payload.maxScreens ?? DEFAULT_MAX_SCREENS,
+    claimedMachines: [],
   };
 
   await collection().insertOne(doc);
@@ -213,7 +268,8 @@ async function listLicenses() {
 }
 
 async function getLicenseById(id) {
-  return toPublicLicense(await findOrThrow(id), await clientDirectory());
+  const doc = await findOrThrow(id);
+  return toPublicLicense(doc, await linkedClientDirectory(doc));
 }
 
 async function updateLicense(id, payload) {
@@ -263,7 +319,107 @@ async function updateLicense(id, payload) {
 
   // licenseKey is deliberately not updatable — clients already hold it.
 
-  await collection().updateOne({ _id: doc._id }, { $set: updates });
+  // Lowering the limit below the machines already admitted would cut off a
+  // working installation without saying which one. The size check rides on
+  // the write itself, so a machine claimed a moment ago is counted too.
+  const filter = { _id: doc._id };
+  if (payload.maxScreens !== undefined) {
+    updates.maxScreens = payload.maxScreens;
+    filter.$expr = {
+      $lte: [{ $size: { $ifNull: ['$claimedMachines', []] } }, payload.maxScreens],
+    };
+  }
+
+  const result = await collection().updateOne(filter, { $set: updates });
+  if (!result.matchedCount) throw maxScreensInUse(await findOrThrow(id));
+  return getLicenseById(doc._id);
+}
+
+function maxScreensInUse(doc) {
+  const used = (doc.claimedMachines || []).length;
+  return new ApiError(
+    409,
+    `${used} ${used === 1 ? 'machine is' : 'machines are'} using this key. Release machines first, then lower Max screens.`,
+    'MACHINES_IN_USE'
+  );
+}
+
+/**
+ * Checked before the license form also saves the POC account, so a rejected
+ * limit does not leave the account changed and the license not. The write in
+ * updateLicense still re-checks, which is what actually guards a race.
+ */
+async function assertMaxScreensFits(id, maxScreens) {
+  if (maxScreens === undefined) return;
+  const doc = await findOrThrow(id);
+  if ((doc.claimedMachines || []).length > maxScreens) throw maxScreensInUse(doc);
+}
+
+/**
+ * Admits the machine a product verifies or syncs from, out of the license's
+ * maxScreens slots. Called only for a license that is otherwise valid, so an
+ * expired or switched-off key never uses up a slot.
+ *
+ * Each step is one atomic write, never a read followed by a write: two
+ * machines verifying at the same moment cannot both take the last slot, and
+ * one machine racing itself cannot take two.
+ *
+ * Returns 'admitted', 'machine_required' or 'screen_limit_reached'.
+ */
+async function admitMachine(license, machineNumber) {
+  const machine = normalizeMachine(machineNumber);
+
+  // A product that names no machine is let through while nothing is claimed:
+  // the limit only starts once a machine has identified itself. After that it
+  // has to, or one unnamed install could sit beside the full set of slots.
+  if (!machine) {
+    return license.claimedMachines.length ? 'machine_required' : 'admitted';
+  }
+
+  const now = new Date();
+  const touch = () =>
+    collection().updateOne(
+      { _id: license.id, 'claimedMachines.machineNumber': machine },
+      { $set: { 'claimedMachines.$.lastSeenAt': now } }
+    );
+
+  // A machine that already holds a slot is always accepted.
+  if ((await touch()).matchedCount) return 'admitted';
+
+  const claimed = await collection().findOneAndUpdate(
+    {
+      _id: license.id,
+      'claimedMachines.machineNumber': { $ne: machine },
+      $expr: {
+        $lt: [
+          { $size: { $ifNull: ['$claimedMachines', []] } },
+          { $ifNull: ['$maxScreens', DEFAULT_MAX_SCREENS] },
+        ],
+      },
+    },
+    { $push: { claimedMachines: { machineNumber: machine, firstSeenAt: now, lastSeenAt: now } } },
+    { projection: { _id: 1 } }
+  );
+  if (claimed) return 'admitted';
+
+  // The push also fails when this same machine claimed its slot between the
+  // two writes above, so look once more before calling the license full.
+  if ((await touch()).matchedCount) return 'admitted';
+  return 'screen_limit_reached';
+}
+
+/** Frees one slot, for when a client replaces a machine. */
+async function releaseMachine(id, machineNumber) {
+  const machine = normalizeMachine(machineNumber);
+  const doc = await findOrThrow(id);
+
+  const result = await collection().updateOne(
+    { _id: doc._id, 'claimedMachines.machineNumber': machine },
+    { $pull: { claimedMachines: { machineNumber: machine } }, $set: { updatedAt: new Date() } }
+  );
+  if (!result.matchedCount) {
+    throw new ApiError(404, 'That machine is not using this license', 'MACHINE_NOT_FOUND');
+  }
   return getLicenseById(doc._id);
 }
 
@@ -333,19 +489,17 @@ async function deleteLicense(id) {
 }
 
 /**
- * Shared lookup behind both /verify and /sync. Returns a plain result object
- * rather than throwing, because each outcome maps to a specific response body.
- */
-/**
- * Shared lookup behind both /verify and /sync. A key is not tied to any one
- * machine: whoever holds it can use it, on as many installations as they like.
+ * Shared lookup behind /verify, /sync, the Digital Diya pair and the PIN
+ * details. Returns a plain result object rather than throwing, because each
+ * outcome maps to a specific response body. The machine limit is not applied
+ * here: only /verify and /sync enforce it, through admitMachine().
  */
 async function checkLicense({ licenseKey, productName }) {
   const doc = await findByKey(licenseKey);
 
   if (!doc) return { outcome: 'not_found' };
 
-  const license = toPublicLicense(doc, await clientDirectory());
+  const license = toPublicLicense(doc, await linkedClientDirectory(doc));
 
   // Product is checked before dates: a key used in the wrong product should say
   // so, rather than leaking that it happens to be expired elsewhere.
@@ -397,7 +551,7 @@ async function updateLicenseContact({ licenseKey, productName, clientName, clien
   const doc = await findByKey(licenseKey);
   if (!doc) throw new ApiError(404, 'Invalid license key', 'LICENSE_NOT_FOUND');
 
-  const current = toPublicLicense(doc, await clientDirectory());
+  const current = toPublicLicense(doc, await linkedClientDirectory(doc));
 
   if (
     productName &&
@@ -490,51 +644,6 @@ async function getStats() {
   };
 }
 
-/**
- * Clients are derived from licenses rather than stored separately, so they can
- * never drift out of sync with the licenses that define them.
- */
-async function listClients() {
-  const licenses = await listLicenses();
-  const byClient = new Map();
-
-  licenses.forEach((license) => {
-    const key = (license.clientUserId || '').toLowerCase();
-    if (!byClient.has(key)) {
-      byClient.set(key, {
-        clientUserId: license.clientUserId,
-        clientName: license.clientName,
-        companyName: license.companyName,
-        products: [],
-        totalLicenses: 0,
-        activeLicenses: 0,
-        expiredLicenses: 0,
-        pendingLicenses: 0,
-        deactivatedLicenses: 0,
-        latestExpiry: null,
-      });
-    }
-
-    const client = byClient.get(key);
-    client.totalLicenses += 1;
-    if (license.status === 'active') client.activeLicenses += 1;
-    else if (license.status === 'pending') client.pendingLicenses += 1;
-    else if (license.status === 'deactivated') client.deactivatedLicenses += 1;
-    else client.expiredLicenses += 1;
-
-    if (license.productName && !client.products.includes(license.productName)) {
-      client.products.push(license.productName);
-    }
-    if (!client.latestExpiry || license.expiryDate > client.latestExpiry) {
-      client.latestExpiry = license.expiryDate;
-    }
-  });
-
-  return [...byClient.values()].sort((a, b) =>
-    (a.clientName || '').localeCompare(b.clientName || '')
-  );
-}
-
 module.exports = {
   COLLECTION,
   createLicense,
@@ -543,13 +652,21 @@ module.exports = {
   updateLicense,
   setLicenseDeactivated,
   deleteLicense,
+  admitMachine,
+  releaseMachine,
+  assertMaxScreensFits,
+  normalizeMachine,
+  DEFAULT_MAX_SCREENS,
+  MAX_SCREENS_LIMIT,
   adoptUnlinkedLicenses,
   relinkClientLicenses,
   checkLicense,
   recordScreens,
   updateLicenseContact,
   getStats,
-  listClients,
   computeStatus,
   toPublicLicense,
+  // Exported for the test that proves the single lookup answers like the full one.
+  clientDirectory,
+  linkedClientDirectory,
 };

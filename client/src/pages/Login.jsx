@@ -69,9 +69,6 @@ export default function Login() {
             <h1 className="mt-5 text-lg font-bold text-slate-900 dark:text-white">
               Sign In to Admin
             </h1>
-            {/* <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-              Sign in to the admin console
-            </p> */}
           </div>
 
           {formError && (

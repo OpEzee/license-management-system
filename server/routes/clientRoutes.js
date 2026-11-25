@@ -67,7 +67,8 @@ router.post(
     text('clientName', 'Client name'),
     text('companyName', 'Company name'),
     username(),
-    password(),
+    // Leave it out to have one generated and returned once.
+    password({ optional: true }),
   ],
   validate,
   controller.create
@@ -86,6 +87,14 @@ router.put(
   ],
   validate,
   controller.update
+);
+
+router.post(
+  '/:id/reset-password',
+  // Hex from newId(), or the alphanumeric ids carried over from Firestore.
+  [param('id').trim().matches(/^[A-Za-z0-9]{1,64}$/).withMessage('Invalid client id')],
+  validate,
+  controller.resetPassword
 );
 
 router.delete('/:id', [param('id').trim().notEmpty()], validate, controller.remove);

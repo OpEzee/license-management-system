@@ -24,8 +24,8 @@ import {
 
 /**
  * Signed in, not yet licensed: the operator types the key, and it is checked
- * with POST /api/licenses/verify. A key is not tied to a machine, so the same
- * key works on every installation it is entered on.
+ * with POST /api/licenses/verify, sending the product's machine number so the
+ * installation claims one of the key's max-screens slots.
  *
  * A key the server knows but will not honour (expired, deactivated, pending)
  * is still handed to the product, so its next screen can say exactly why.
@@ -61,6 +61,7 @@ export default function ClientActivate() {
       const data = await productClientApi.verify({
         licenseKey,
         productName: params.product || undefined,
+        machineNumber: params.machine || undefined,
       })
       const status = data.valid ? 'active' : data.license?.status || 'deactivated'
 

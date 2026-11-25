@@ -1,21 +1,26 @@
 import { useState } from 'react'
 
+/** Copies text, falling back to a temp textarea outside a secure context. */
+export async function copyText(value) {
+  try {
+    await navigator.clipboard.writeText(value)
+  } catch {
+    // The Clipboard API needs a secure context; fall back to a temp textarea.
+    const el = document.createElement('textarea')
+    el.value = value
+    document.body.appendChild(el)
+    el.select()
+    document.execCommand('copy')
+    document.body.removeChild(el)
+  }
+}
+
 /** Monospace license key with a one-click copy button. */
 export default function LicenseKey({ value, onCopied, size = 'sm', showLabel = true }) {
   const [copied, setCopied] = useState(false)
 
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(value)
-    } catch {
-      // The Clipboard API needs a secure context; fall back to a temp textarea.
-      const el = document.createElement('textarea')
-      el.value = value
-      document.body.appendChild(el)
-      el.select()
-      document.execCommand('copy')
-      document.body.removeChild(el)
-    }
+    await copyText(value)
     setCopied(true)
     onCopied?.()
     setTimeout(() => setCopied(false), 1800)

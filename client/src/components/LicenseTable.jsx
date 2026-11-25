@@ -25,6 +25,24 @@ function Screens({ screens }) {
 }
 
 /*
+ * The machines /verify has admitted, out of the license's max screens: "2/3".
+ * Amber once every slot is taken, since the next new machine is refused.
+ */
+function Machines({ license }) {
+  const used = license.claimedMachines?.length ?? 0
+  const max = license.maxScreens ?? 1
+  return (
+    <span
+      className={`font-semibold ${used >= max ? 'text-amber-600 dark:text-amber-400' : 'text-slate-900 dark:text-white'}`}
+      title={`${used} of ${max} ${max === 1 ? 'machine' : 'machines'} in use`}
+    >
+      {used}
+      <span className="font-normal text-slate-500 dark:text-slate-400">/{max}</span>
+    </span>
+  )
+}
+
+/*
  * `nowrap` marks the columns whose content must stay on one line — the key, the
  * dates, the status chip. Everything else is allowed to wrap so the table can
  * compress to the available width instead of forcing a horizontal scrollbar.
@@ -47,6 +65,7 @@ const COLUMNS = {
     render: (l) => l.soldBy || dash,
   },
   screens: { header: 'Screens', nowrap: true, render: (l) => <Screens screens={l.screens} /> },
+  machines: { header: 'Machines', nowrap: true, render: (l) => <Machines license={l} /> },
   startDate: { header: 'Start Date', nowrap: true, render: (l) => formatDate(l.startDate) },
   expiryDate: { header: 'Expiry Date', nowrap: true, render: (l) => formatDate(l.expiryDate) },
   status: {
@@ -121,7 +140,7 @@ export default function LicenseTable({ licenses, columns, actions, onCopied }) {
         </table>
       </div>
 
-      {/* Below xl the ten columns cannot fit, so every field is shown stacked
+      {/* Below xl the eleven columns cannot fit, so every field is shown stacked
           instead — nothing is hidden, and there is nothing to scroll sideways. */}
       <div className="divide-y divide-slate-100 dark:divide-slate-800 xl:hidden">
         {licenses.map((license) => (
@@ -154,6 +173,14 @@ export default function LicenseTable({ licenses, columns, actions, onCopied }) {
                   <dt className="text-slate-500 dark:text-slate-400">Screens</dt>
                   <dd className="text-right text-slate-800 dark:text-slate-200">
                     <Screens screens={license.screens} />
+                  </dd>
+                </>
+              )}
+              {has('machines') && (
+                <>
+                  <dt className="text-slate-500 dark:text-slate-400">Machines</dt>
+                  <dd className="text-right text-slate-800 dark:text-slate-200">
+                    <Machines license={license} />
                   </dd>
                 </>
               )}

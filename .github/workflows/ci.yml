@@ -1,0 +1,71 @@
+# Tests, builds and audits every push and pull request to main and production.
+# The server tests run against a real MongoDB (no fake), so a mongo:7 service
+# container is started next to the job. Every value below is a dummy for CI:
+# no real secret is used or needed.
+name: CI
+
+on:
+  push:
+    branches: [main, production]
+  pull_request:
+    branches: [main, production]
+
+# A newer push to the same branch (or PR) cancels the run still going for it.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test-build-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        # Wait until MongoDB answers before the steps start.
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      MONGODB_URI: mongodb://localhost:27017
+      # A database name of the run's own. The server suite goes further and
+      # creates a throwaway opezee_licenses_test_<pid>_<time> database, which
+      # it drops at the end, so this is only a fallback.
+      MONGODB_DB: opezee_licenses_ci_${{ github.run_id }}
+      # Dummy value: the suite sets its own, and nothing here is deployed.
+      JWT_SECRET: ci-dummy-jwt-secret-not-a-real-secret-0123456789
+      # Keeps the email tests from ever reaching a mail server.
+      SMTP_HOST: ''
+      SMTP_USER: ''
+      SMTP_PASS: ''
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Test (server against MongoDB, then client)
+        run: npm test
+
+      - name: Build the dashboard
+        run: npm run build
+
+      - name: Audit production dependencies (high and above)
+        run: npm audit --omit=dev --audit-level=high

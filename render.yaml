@@ -20,11 +20,20 @@ services:
         generateValue: true
       - key: TOKEN_EXPIRES_IN
         value: 12h
-      # MongoDB connection string (e.g. a MongoDB Atlas cluster) and database name.
+      # MongoDB connection string and database name. Render runs no MongoDB of
+      # its own, and the server exits at start-up if it cannot connect, so the
+      # URI must point to a hosted database such as MongoDB Atlas
+      # (mongodb+srv://user:password@cluster.example.mongodb.net/). On Atlas,
+      # allow Render's outbound IPs (or 0.0.0.0/0) in the network access list.
       - key: MONGODB_URI
         sync: false
       - key: MONGODB_DB
         value: opezee_licenses
+      # The staff PIN of the hosted /client/pin page: a unique 4 to 8 digits,
+      # set in the Render dashboard. Until it is, that page answers 503, and
+      # the example value 1968 is refused in production.
+      - key: CLIENT_PIN
+        sync: false
       # The dashboard is same-origin, so this is only needed when another site
       # calls the admin API. The public license endpoints never need it.
       - key: CORS_ORIGIN

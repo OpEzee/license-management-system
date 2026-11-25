@@ -70,4 +70,34 @@ async function closeDb() {
   db = null;
 }
 
-module.exports = { initDb, getDb, collection, newId, closeDb, ensureIndexes, settings };
+const PING_TIMEOUT_MS = 2000;
+
+/**
+ * Resolves when MongoDB answers a ping, rejects when it fails or takes longer
+ * than `timeoutMs`. The timeout is ours rather than the driver's: the driver
+ * waits up to serverSelectionTimeoutMS (5 s) for a lost server, longer than a
+ * health check should hang.
+ */
+async function pingDb(timeoutMs = PING_TIMEOUT_MS) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`ping timed out after ${timeoutMs} ms`)), timeoutMs);
+  });
+  try {
+    await Promise.race([getDb().command({ ping: 1 }), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+module.exports = {
+  initDb,
+  getDb,
+  collection,
+  newId,
+  closeDb,
+  ensureIndexes,
+  settings,
+  pingDb,
+  PING_TIMEOUT_MS,
+};

@@ -12,6 +12,14 @@ export function formatDate(value) {
   return `${String(d.getUTCDate()).padStart(2, '0')} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`
 }
 
+/** "20 Nov" — for short lists where the year is obvious. UTC, like formatDate. */
+export function formatShortDate(value) {
+  if (!value) return '-'
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return '-'
+  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`
+}
+
 /** "23-09-2027" — the product-facing details page, as products print it. */
 export function formatDateNumeric(value) {
   if (!value) return '-'
@@ -30,12 +38,6 @@ export function toDateInput(value) {
   return d.toISOString().slice(0, 10)
 }
 
-export function daysUntil(value) {
-  if (!value) return null
-  const diff = new Date(value).getTime() - Date.now()
-  return Math.ceil(diff / 86400000)
-}
-
 /**
  * Predefined license durations. These mirror server/utils/licenseDates.js —
  * the frontend only previews the expiry date; the backend computes the value
@@ -48,10 +50,6 @@ export const DURATIONS = [
   { value: '1_year', label: '1 Year', months: 12 },
   { value: 'custom', label: 'Custom Date', months: null },
 ]
-
-export function durationLabel(value) {
-  return DURATIONS.find((d) => d.value === value)?.label || 'Custom Date'
-}
 
 /** Mirrors the backend's month arithmetic, clamping 31 Jan + 1 month to 28 Feb. */
 export function addMonthsUtc(dateInput, months) {

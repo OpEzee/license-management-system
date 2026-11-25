@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 
 import TableToolbar from '../components/TableToolbar'
 import LicenseTable from '../components/LicenseTable'
@@ -6,10 +7,11 @@ import LicenseFormModal from '../components/LicenseFormModal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import Modal from '../components/Modal'
 import LicenseKey from '../components/LicenseKey'
+import ShowOncePassword from '../components/ShowOncePassword'
 import { EmptyState, ErrorState, TableSkeleton } from '../components/States'
 import { useToast } from '../components/Toast'
 import useLicenses, { filterByProduct, filterLicenses, useClients, useProducts } from '../hooks/useLicenses'
-import { licenseApi } from '../services/api'
+import { clientApi, licenseApi } from '../services/api'
 import { formatDate } from '../services/format'
 
 const COLUMNS = [
@@ -19,13 +21,15 @@ const COLUMNS = [
   'clientUserId',
   'productName',
   'soldBy',
+  'machines',
   'startDate',
   'expiryDate',
   'status',
 ]
 
 // Digital Diya's own view: no dates, and the screens each key runs on instead
-// (out of what its Digital Diya plan allows, as reported on sync).
+// (out of what its Digital Diya plan allows, as reported on sync). No machines
+// column: Digital Diya does not send machine numbers, so it claims no slots.
 const DIGITAL_DIYA_COLUMNS = [
   'clientName',
   'licenseKey',
@@ -59,6 +63,8 @@ export default function Licenses() {
   const [deleting, setDeleting] = useState(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [created, setCreated] = useState(null)
+  // An edit that made a new POC account: { username, password }, shown once.
+  const [issued, setIssued] = useState(null)
 
   const visible = useMemo(
     () => filterLicenses(filterByProduct(licenses, product), search, status),
@@ -66,6 +72,7 @@ export default function Licenses() {
   )
   const digitalDiya = product === 'digital-diya'
   const copied = () => toast.success('License key copied to clipboard')
+  const passwordCopied = () => toast.success('Password copied to clipboard')
 
   const openCreate = () => {
     setEditing(null)
@@ -77,6 +84,19 @@ export default function Licenses() {
     setFormOpen(true)
   }
 
+  // /licenses?new=1 (the Dashboard's "New license" button) opens the create
+  // form. The flag is dropped straight away, so a refresh or Back does not
+  // open it a second time.
+  const [searchParams, setSearchParams] = useSearchParams()
+  useEffect(() => {
+    if (searchParams.get('new') !== '1') return
+    openCreate()
+    const next = new URLSearchParams(searchParams)
+    next.delete('new')
+    setSearchParams(next, { replace: true })
+    // openCreate only sets state, so it is safe to leave out of the deps.
+  }, [searchParams, setSearchParams])
+
   const closeForm = () => {
     setFormOpen(false)
     setEditing(null)
@@ -85,7 +105,11 @@ export default function Licenses() {
   const handleSubmit = async (values, { deactivated } = {}) => {
     try {
       if (editing) {
-        await licenseApi.update(editing.id, values)
+        const updated = await licenseApi.update(editing.id, values)
+        // Only when this edit created the POC's account (a new email).
+        if (updated.pocPassword) {
+          setIssued({ username: updated.clientUserId, password: updated.pocPassword })
+        }
         // The status dropdown only takes effect here, on Save Changes.
         const statusChanged =
           deactivated !== undefined && deactivated !== Boolean(editing.deactivated)
@@ -100,6 +124,32 @@ export default function Licenses() {
       await Promise.all([reload({ silent: true }), reloadClients({ silent: true })])
     } catch (err) {
       toast.error(err.message)
+    }
+  }
+
+  // The popup stays open on its own copy of the machines; only the table is
+  // refreshed, so unsaved edits in the form survive a release.
+  const handleReleaseMachine = async (machineNumber) => {
+    try {
+      const updated = await licenseApi.releaseMachine(editing.id, machineNumber)
+      toast.success(`${machineNumber} released`)
+      await reload({ silent: true })
+      return updated
+    } catch (err) {
+      toast.error(err.message)
+      return null
+    }
+  }
+
+  // The form shows the new password itself, inside the open popup.
+  const handleResetPassword = async (account) => {
+    try {
+      const password = await clientApi.resetPassword(account.id)
+      toast.success('Password reset')
+      return password
+    } catch (err) {
+      toast.error(err.message)
+      return null
     }
   }
 
@@ -160,9 +210,6 @@ export default function Licenses() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="page-title">Licenses</h1>
-          {/* <p className="page-subtitle">
-            Create, review and revoke the license keys issued to your clients.
-          </p> */}
         </div>
         <button className="btn-primary" onClick={openCreate}>
           <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
@@ -203,6 +250,8 @@ export default function Licenses() {
         clients={clients}
         onClose={closeForm}
         onSubmit={handleSubmit}
+        onReleaseMachine={handleReleaseMachine}
+        onResetPassword={handleResetPassword}
       />
 
       <ConfirmDialog
@@ -222,7 +271,11 @@ export default function Licenses() {
       <Modal
         open={Boolean(created)}
         title="License created"
-        subtitle="Share this license key with your client for product activation."
+        subtitle={
+          created?.pocPassword
+            ? 'Share the license key and the POC password with your client.'
+            : 'Share this license key with your client for product activation.'
+        }
         onClose={() => setCreated(null)}
         maxWidth="max-w-md"
       >
@@ -236,6 +289,13 @@ export default function Licenses() {
                 <LicenseKey value={created.licenseKey} onCopied={copied} size="lg" />
               </div>
             </div>
+            {created.pocPassword && (
+              <ShowOncePassword
+                value={created.pocPassword}
+                username={created.clientUserId}
+                onCopied={passwordCopied}
+              />
+            )}
             <dl className="space-y-2 text-sm">
               {[
                 ['Client', created.clientName],
@@ -250,6 +310,28 @@ export default function Licenses() {
               ))}
             </dl>
             <button className="btn-primary w-full" onClick={() => setCreated(null)}>
+              Done
+            </button>
+          </div>
+        )}
+      </Modal>
+
+      {/* After an edit moved a license to a new email and made its account */}
+      <Modal
+        open={Boolean(issued)}
+        title="POC account created"
+        subtitle="Send this password to the POC. They sign in to the product with it."
+        onClose={() => setIssued(null)}
+        maxWidth="max-w-md"
+      >
+        {issued && (
+          <div className="space-y-4">
+            <ShowOncePassword
+              value={issued.password}
+              username={issued.username}
+              onCopied={passwordCopied}
+            />
+            <button className="btn-primary w-full" onClick={() => setIssued(null)}>
               Done
             </button>
           </div>

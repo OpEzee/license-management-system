@@ -96,7 +96,37 @@ const server = app.listen(0, async () => {
 
   try {
     console.log('\n-- health --')
-    check('health ok', (await call('GET', '/health')).status === 200)
+    const healthUp = await call('GET', '/health')
+    check('health: 200 with db up while MongoDB answers',
+      healthUp.status === 200 && healthUp.body.success === true &&
+        healthUp.body.status === 'ok' && healthUp.body.db === 'up' && Boolean(healthUp.body.timestamp),
+      healthUp.body)
+
+    // Make the ping fail, then hang, on the shared Db handle the app uses.
+    const liveDb = db.getDb()
+    const realCommand = liveDb.command
+    const healthKeys = (body) => Object.keys(body).sort().join()
+    try {
+      liveDb.command = () => Promise.reject(new Error('connection refused at 10.0.0.5:27017 (secret detail)'))
+      const healthDown = await call('GET', '/health')
+      check('health: 503 with db down when the ping fails',
+        healthDown.status === 503 && healthDown.body.success === false &&
+          healthDown.body.status === 'error' && healthDown.body.db === 'down', healthDown.body)
+      check('health: the failure response carries no error details',
+        healthKeys(healthDown.body) === 'db,status,success,timestamp' &&
+          !JSON.stringify(healthDown.body).includes('secret detail'), healthDown.body)
+
+      liveDb.command = () => new Promise(() => {})
+      const startedAt = Date.now()
+      const healthHung = await call('GET', '/health')
+      const waited = Date.now() - startedAt
+      check('health: a ping that never answers gives 503 after about 2 seconds',
+        healthHung.status === 503 && healthHung.body.db === 'down' && waited >= 1900 && waited < 4000,
+        { status: healthHung.status, waited })
+    } finally {
+      liveDb.command = realCommand
+    }
+    check('health: back to 200 once MongoDB answers again', (await call('GET', '/health')).status === 200)
 
     console.log('\n-- authentication --')
     await adminService.upsertAdmin({ email: ADMIN.email, password: ADMIN.password })
@@ -286,41 +316,281 @@ const server = app.listen(0, async () => {
       (await call('POST', '/api/licenses/verify',
         { licenseKey: live.licenseKey }, { auth: false })).body.valid === true)
 
-    console.log('\n-- no machine lock --')
-    // Its own IP, so these calls do not eat the shared verify rate limit.
-    const MACHINE_TEST_IP = '203.0.113.7'
-    // A key is not tied to a machine: whoever holds it can use it, on as many
-    // installations as they like.
-    const anywhere = (await call('POST', '/api/licenses', newLicense({
-      duration: 'custom', startDate: '2020-01-01', expiryDate: '2099-01-01',
-    }))).body.license
-    check('a license carries no machine number', !('machineNumber' in anywhere), anywhere)
+    console.log('\n-- max screens per license --')
+    // Every block gets its own IP, so these calls do not eat the shared verify
+    // rate limit (20 a minute) or each other's. 198.51.100.x is kept apart from
+    // the 203.0.113.x addresses the Digital Diya and PIN blocks use.
+    const SCREENS_POC = 'screens.poc'
+    const screensLicense = (over = {}) =>
+      call('POST', '/api/licenses', newLicense({
+        clientName: 'Screens Poc', clientUserId: SCREENS_POC,
+        duration: 'custom', startDate: '2020-01-01', expiryDate: '2099-01-01', ...over,
+      }))
+    const withMachine = (licenseKey, machineNumber) => ({
+      licenseKey, productName: 'My Product',
+      ...(machineNumber !== undefined ? { machineNumber } : {}),
+    })
+    const verifyOn = (licenseKey, machineNumber, ip) =>
+      call('POST', '/api/licenses/verify', withMachine(licenseKey, machineNumber), { auth: false, ip })
+    const syncOn = (licenseKey, machineNumber, ip) =>
+      call('POST', '/api/licenses/sync', withMachine(licenseKey, machineNumber), { auth: false, ip })
+    const machinesOf = async (id) =>
+      (await call('GET', `/api/licenses/${id}`)).body.license.claimedMachines
+    const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-    const first = await call('POST', '/api/licenses/verify',
-      { licenseKey: anywhere.licenseKey, productName: 'My Product' },
-      { auth: false, ip: MACHINE_TEST_IP })
-    check('a key verifies without a machine number',
-      first.status === 200 && first.body.valid === true, first.body)
-    check('the answer names no machine', !('machineNumber' in first.body.license), first.body)
+    // Defaults: one machine, and nothing claimed until a machine identifies itself.
+    const single = (await screensLicense()).body.license
+    check('a new license defaults to one machine',
+      single.maxScreens === 1 && single.claimedMachines.length === 0, single)
+    const unnamed = await verifyOn(single.licenseKey, undefined, '198.51.100.10')
+    check('verify without a machine number works while nothing is claimed',
+      unnamed.status === 200 && unnamed.body.valid === true, unnamed.body)
+    check('...and claims no slot', (await machinesOf(single.id)).length === 0)
+    check('the public answer never lists the machines',
+      !('claimedMachines' in unnamed.body.license) && !('maxScreens' in unnamed.body.license), unnamed.body)
 
-    // Products built before the change still send one; it is ignored.
-    const pcA = await call('POST', '/api/licenses/verify',
-      { licenseKey: anywhere.licenseKey, productName: 'My Product', machineNumber: 'PC-ALPHA-01' },
-      { auth: false, ip: MACHINE_TEST_IP })
-    const pcB = await call('POST', '/api/licenses/verify',
-      { licenseKey: anywhere.licenseKey, productName: 'My Product', machineNumber: 'PC-BETA-02' },
-      { auth: false, ip: MACHINE_TEST_IP })
-    check('the same key verifies on two machines',
-      pcA.body.valid === true && pcB.body.valid === true, [pcA.body, pcB.body])
-    check('a machine number sent by an older product is not stored',
-      !('machineNumber' in (await call('GET', `/api/licenses/${anywhere.id}`)).body.license))
+    // The first N machines claim a slot; machine N+1 is refused.
+    const IP_LIMIT = '198.51.100.11'
+    const three = (await screensLicense({ maxScreens: 3 })).body.license
+    check('creates a license with max screens 3', three.maxScreens === 3, three)
+    const firstThree = []
+    for (const pc of ['PC-01', 'PC-02', 'PC-03']) firstThree.push(await verifyOn(three.licenseKey, pc, IP_LIMIT))
+    check('the first 3 machines are accepted',
+      firstThree.every((r) => r.status === 200 && r.body.valid === true), firstThree.map((r) => r.body))
+    const fourth = await verifyOn(three.licenseKey, 'PC-04', IP_LIMIT)
+    check('machine 4 is refused with 403 SCREEN_LIMIT_REACHED',
+      fourth.status === 403 && fourth.body.valid === false && fourth.body.code === 'SCREEN_LIMIT_REACHED',
+      fourth.body)
+    const fourthSync = await syncOn(three.licenseKey, 'PC-04', IP_LIMIT)
+    check('sync refuses machine 4 the same way',
+      fourthSync.status === 403 && fourthSync.body.valid === false &&
+        fourthSync.body.code === 'SCREEN_LIMIT_REACHED' && fourthSync.body.status === 'invalid' &&
+        Boolean(fourthSync.body.checkedAt), fourthSync.body)
 
-    const syncAny = await call('POST', '/api/licenses/sync',
-      { licenseKey: anywhere.licenseKey, machineNumber: 'PC-GAMMA-03' }, { auth: false, ip: MACHINE_TEST_IP })
-    check('sync answers for any machine', syncAny.body.valid === true, syncAny.body)
-    check('sync names no machine', !('machineNumber' in syncAny.body), syncAny.body)
+    const again = await verifyOn(three.licenseKey, 'PC-02', IP_LIMIT)
+    check('a claimed machine stays accepted once the limit is reached',
+      again.status === 200 && again.body.valid === true, again.body)
+    const fuzzy = await verifyOn(three.licenseKey, '  pc-03 ', IP_LIMIT)
+    check('machine numbers match trimmed and case-insensitively', fuzzy.body.valid === true, fuzzy.body)
+    const listed = await machinesOf(three.id)
+    check('the admin view lists exactly the 3 machines, with dates',
+      listed.length === 3 &&
+        listed.map((m) => m.machineNumber).join() === 'pc-01,pc-02,pc-03' &&
+        listed.every((m) => m.firstSeenAt && m.lastSeenAt), listed)
 
-    await call('DELETE', `/api/licenses/${anywhere.id}`)
+    const seenBefore = listed.find((m) => m.machineNumber === 'pc-01').lastSeenAt
+    await pause(15)
+    const pcOneSync = await syncOn(three.licenseKey, 'PC-01', IP_LIMIT)
+    const seenAfter = (await machinesOf(three.id)).find((m) => m.machineNumber === 'pc-01').lastSeenAt
+    check('a successful sync updates lastSeenAt',
+      pcOneSync.body.valid === true && seenAfter > seenBefore, { seenBefore, seenAfter })
+
+    const IP_NAMELESS = '198.51.100.12'
+    const nameless = await verifyOn(three.licenseKey, undefined, IP_NAMELESS)
+    check('after claims, verify with no machine number is refused (MACHINE_NUMBER_REQUIRED)',
+      nameless.status === 403 && nameless.body.valid === false &&
+        nameless.body.code === 'MACHINE_NUMBER_REQUIRED', nameless.body)
+    const namelessSync = await syncOn(three.licenseKey, '', IP_NAMELESS)
+    check('...and so is sync with a blank one',
+      namelessSync.status === 403 && namelessSync.body.code === 'MACHINE_NUMBER_REQUIRED', namelessSync.body)
+    check('a malformed machine number -> 400',
+      (await verifyOn(three.licenseKey, 'PC 01!', IP_NAMELESS)).status === 400)
+    check('a machine number over 128 characters -> 400',
+      (await verifyOn(three.licenseKey, 'P'.repeat(129), IP_NAMELESS)).status === 400)
+
+    // Only /verify and /sync enforce the limit; the POC self-service stays key-only.
+    const pocOnFull = await call('PUT', '/api/licenses/poc',
+      { licenseKey: three.licenseKey, pocName: 'Screens Poc' }, { auth: false, ip: IP_NAMELESS })
+    check('/poc still works by key alone on a full license', pocOnFull.status === 200, pocOnFull.body)
+
+    // A key that is not otherwise valid never uses up a slot.
+    const lapsed = (await screensLicense({ startDate: '2020-01-01', expiryDate: '2021-01-01' })).body.license
+    const lapsedCheck = await verifyOn(lapsed.licenseKey, 'PC-LATE', IP_NAMELESS)
+    check('an expired key answers expired and claims nothing',
+      lapsedCheck.status === 200 && lapsedCheck.body.valid === false &&
+        (await machinesOf(lapsed.id)).length === 0, lapsedCheck.body)
+
+    // Changing the limit.
+    const lower = await call('PUT', `/api/licenses/${three.id}`, { maxScreens: 2, soldBy: 'Someone Else' })
+    check('lowering below the machines claimed -> 409 MACHINES_IN_USE',
+      lower.status === 409 && lower.body.code === 'MACHINES_IN_USE' &&
+        /Release machines first/.test(lower.body.message), lower.body)
+    const unchanged = (await call('GET', `/api/licenses/${three.id}`)).body.license
+    check('a refused limit saves nothing else either',
+      unchanged.maxScreens === 3 && unchanged.soldBy === 'Alex Seller', unchanged)
+    check('raising the limit works',
+      (await call('PUT', `/api/licenses/${three.id}`, { maxScreens: 4 })).body.license.maxScreens === 4)
+    check('setting it to exactly the machines claimed works',
+      (await call('PUT', `/api/licenses/${three.id}`, { maxScreens: 3 })).body.license.maxScreens === 3)
+    for (const bad of [0, 101, 1.5, 'abc']) {
+      check(`max screens ${JSON.stringify(bad)} -> 400 on update`,
+        (await call('PUT', `/api/licenses/${three.id}`, { maxScreens: bad })).status === 400)
+    }
+    check('max screens 0 -> 400 on create', (await screensLicense({ maxScreens: 0 })).status === 400)
+    check('max screens 101 -> 400 on create', (await screensLicense({ maxScreens: 101 })).status === 400)
+    check('max screens needs a token',
+      (await call('PUT', `/api/licenses/${three.id}`, { maxScreens: 5 }, { auth: false })).status === 401)
+
+    // Releasing a machine.
+    const releasePath = (id, machine) => `/api/licenses/${id}/machines/${encodeURIComponent(machine)}`
+    check('release needs a token',
+      (await call('DELETE', releasePath(three.id, 'PC-02'), null, { auth: false })).status === 401)
+    check('release validates the machine number',
+      (await call('DELETE', releasePath(three.id, 'bad id!'))).status === 400)
+    const unknownMachine = await call('DELETE', releasePath(three.id, 'PC-99'))
+    check('releasing a machine the license does not have -> 404 MACHINE_NOT_FOUND',
+      unknownMachine.status === 404 && unknownMachine.body.code === 'MACHINE_NOT_FOUND', unknownMachine.body)
+    const unknownLicense = await call('DELETE', releasePath('no-such-license', 'PC-01'))
+    check('releasing on an unknown license -> 404 LICENSE_NOT_FOUND',
+      unknownLicense.status === 404 && unknownLicense.body.code === 'LICENSE_NOT_FOUND', unknownLicense.body)
+    const released = await call('DELETE', releasePath(three.id, 'PC-02'))
+    check('release frees the slot',
+      released.status === 200 && released.body.license.claimedMachines.length === 2, released.body)
+    const IP_RELEASE = '198.51.100.13'
+    check('a new machine can then take the freed slot',
+      (await verifyOn(three.licenseKey, 'PC-04', IP_RELEASE)).body.valid === true)
+    check('the released machine is now refused, since the license is full again',
+      (await verifyOn(three.licenseKey, 'PC-02', IP_RELEASE)).body.code === 'SCREEN_LIMIT_REACHED')
+
+    // Machines verifying at the same moment never go over the limit.
+    const IP_RACE = '198.51.100.14'
+    const race = (await screensLicense({ maxScreens: 2 })).body.license
+    const racing = await Promise.all(
+      ['A', 'B', 'C', 'D', 'E'].map((m) => verifyOn(race.licenseKey, `RACE-${m}`, IP_RACE))
+    )
+    check('5 machines at once on a 2-slot license: exactly 2 accepted, 3 refused',
+      racing.filter((r) => r.body.valid === true).length === 2 &&
+        racing.filter((r) => r.body.code === 'SCREEN_LIMIT_REACHED').length === 3,
+      racing.map((r) => r.body.code || 'ok'))
+    check('...and exactly 2 slots are stored', (await machinesOf(race.id)).length === 2)
+    const solo = (await screensLicense({ maxScreens: 3 })).body.license
+    const selfRace = await Promise.all([1, 2, 3, 4].map(() => verifyOn(solo.licenseKey, 'SAME-PC', IP_RACE)))
+    check('one machine verifying 4 times at once is accepted every time',
+      selfRace.every((r) => r.body.valid === true), selfRace.map((r) => r.body))
+    check('...and takes only one slot', (await machinesOf(solo.id)).length === 1)
+
+    // The migration: existing licenses get a limit that keeps them working.
+    console.log('\n-- set-max-screens migration --')
+    const { migrate, parseArgs } = require(path.join(BACKEND, 'scripts/setMaxScreens.js'))
+    const { generateLicenseKey } = require(path.join(BACKEND, 'utils/generateLicenseKey.js'))
+    const rawLicenses = db.getDb().collection('licenses')
+    const legacyDoc = (over) => ({
+      _id: db.newId(), licenseKey: generateLicenseKey(),
+      clientName: 'Screens Poc', clientUserId: SCREENS_POC, productName: 'My Product',
+      soldBy: 'Alex Seller', duration: 'custom', deactivated: false,
+      startDate: new Date('2020-01-01'), expiryDate: new Date('2099-01-01'),
+      createdAt: new Date(), updatedAt: new Date(), ...over,
+    })
+    const noMachines = legacyDoc({})
+    const oneLegacy = legacyDoc({ machineNumber: ' Old-PC-1 ' })
+    const threeClaimed = legacyDoc({
+      claimedMachines: ['m-1', 'm-2', 'm-3'].map((machineNumber) => ({
+        machineNumber, firstSeenAt: new Date(), lastSeenAt: new Date(),
+      })),
+    })
+    const alreadySet = legacyDoc({ maxScreens: 7, claimedMachines: [] })
+    await rawLicenses.insertMany([noMachines, oneLegacy, threeClaimed, alreadySet])
+    const stored = async (doc) => rawLicenses.findOne({ _id: doc._id })
+
+    const dry = await migrate(db.getDb(), { min: 1, dryRun: true })
+    check('a dry run reports the 3 licenses without a limit', dry.updated === 3, dry)
+    check('...and writes nothing', (await stored(oneLegacy)).maxScreens === undefined)
+
+    const run = await migrate(db.getDb(), { min: 1 })
+    check('the migration updates the 3 licenses and counts the legacy machine',
+      run.updated === 3 && run.legacyMachinesCarried === 1, run)
+    check('a license with no machines gets 1', (await stored(noMachines)).maxScreens === 1)
+    const migratedLegacy = await stored(oneLegacy)
+    check('the old lock\'s machine is kept as a claimed slot, and the old field removed',
+      migratedLegacy.maxScreens === 1 && migratedLegacy.claimedMachines.length === 1 &&
+        migratedLegacy.claimedMachines[0].machineNumber === 'old-pc-1' &&
+        !('machineNumber' in migratedLegacy), migratedLegacy)
+    check('a license already on 3 machines gets 3', (await stored(threeClaimed)).maxScreens === 3)
+    check('a license that already had a limit is left alone', (await stored(alreadySet)).maxScreens === 7)
+
+    const IP_MIGRATED = '198.51.100.15'
+    check('after the migration the existing install still verifies',
+      (await verifyOn(oneLegacy.licenseKey, 'OLD-PC-1', IP_MIGRATED)).body.valid === true)
+    check('...while a new machine on that key is refused',
+      (await verifyOn(oneLegacy.licenseKey, 'NEW-PC', IP_MIGRATED)).body.code === 'SCREEN_LIMIT_REACHED')
+    const threeStillWork = []
+    for (const m of ['M-1', 'M-2', 'M-3']) threeStillWork.push(await verifyOn(threeClaimed.licenseKey, m, IP_MIGRATED))
+    check('all 3 existing machines of a 3-machine license still verify',
+      threeStillWork.every((r) => r.body.valid === true), threeStillWork.map((r) => r.body))
+
+    check('running it again changes nothing', (await migrate(db.getDb(), { min: 1 })).updated === 0)
+    const floored = legacyDoc({ machineNumber: 'ONLY-ONE' })
+    await rawLicenses.insertOne(floored)
+    await migrate(db.getDb(), { min: 5 })
+    check('--min 5 gives an existing license 5 slots, keeping its machine',
+      (await stored(floored)).maxScreens === 5 && (await stored(floored)).claimedMachines.length === 1)
+    check('--min parses both forms',
+      parseArgs(['--min', '5']).min === 5 && parseArgs(['--min=3', '--dry-run']).dryRun === true)
+    let badMin = null
+    try { parseArgs(['--min', '0']) } catch (e) { badMin = e }
+    check('--min 0 is refused', Boolean(badMin))
+
+    // Leave the later suites the database they expect.
+    await rawLicenses.deleteMany({ clientUserId: SCREENS_POC })
+
+    console.log('\n-- verify reads one client, not all --')
+    const licenseService = require(path.join(BACKEND, 'services/licenseService.js'))
+    const rawClients = db.getDb().collection('clients')
+    const ONE_IP = '198.51.100.50'
+    const lookupClient = (id, username, name) => ({
+      _id: id, username, clientName: name, companyName: `${name} Co`, passwordHash: 'x',
+      createdAt: new Date(), updatedAt: new Date(),
+    })
+    const lookupAccounts = [
+      lookupClient('lookup-c1', 'lookup.linked@test.com', 'Lookup Account'),
+      // As carried over from Firestore: capitals and stray spaces.
+      lookupClient('lookup-c2', ' Lookup.Legacy@Test.com ', 'Lookup Legacy'),
+      // Enough other accounts that reading them all would show up.
+      ...Array.from({ length: 30 }, (_, i) => lookupClient(`lookup-x${i}`, `lookup.other${i}@test.com`, `Other ${i}`)),
+    ]
+    await rawClients.insertMany(lookupAccounts)
+    const lookupCases = [
+      ['linked, names typed on the license', { clientUserId: 'lookup.linked@test.com', clientName: 'Typed', companyName: 'Typed Co' }],
+      ['linked, names left blank', { clientUserId: 'lookup.linked@test.com', clientName: '', companyName: '' }],
+      ['user ID in capitals', { clientUserId: 'LOOKUP.LINKED@TEST.COM', clientName: '', companyName: '' }],
+      ['legacy clientEmail field', { clientEmail: 'lookup.linked@test.com', clientName: '', companyName: '' }],
+      ['legacy username with capitals and spaces', { clientUserId: 'lookup.legacy@test.com', clientName: '', companyName: '' }],
+      ['user ID with no account', { clientUserId: 'lookup.nobody@test.com', clientName: 'Nobody', companyName: '' }],
+      ['not linked at all', { clientUserId: '', clientName: 'Unlinked', companyName: '' }],
+    ]
+    const fullDirectory = await licenseService.clientDirectory()
+    for (const [what, over] of lookupCases) {
+      const doc = legacyDoc({ maxScreens: 1, claimedMachines: [], ...over })
+      if (over.clientEmail) delete doc.clientUserId
+      const viaOne = JSON.stringify(licenseService.toPublicLicense(doc, await licenseService.linkedClientDirectory(doc)))
+      const viaAll = JSON.stringify(licenseService.toPublicLicense(doc, fullDirectory))
+      check(`single lookup answers exactly like the full one: ${what}`, viaOne === viaAll, { viaOne, viaAll })
+    }
+
+    // The profiler records every read on the test database: prove /verify
+    // reads one client document through the username index, not all 32.
+    const profiled = legacyDoc({ clientUserId: 'lookup.linked@test.com', clientName: '', companyName: '', maxScreens: 1, claimedMachines: [] })
+    await rawLicenses.insertOne(profiled)
+    const testDb = db.getDb()
+    await testDb.command({ profile: 0 })
+    await testDb.collection('system.profile').drop().catch(() => {})
+    await testDb.command({ profile: 2 })
+    const verifiedOne = await call('POST', '/api/licenses/verify',
+      { licenseKey: profiled.licenseKey, productName: 'My Product' }, { auth: false, ip: ONE_IP })
+    await testDb.command({ profile: 0 })
+    const clientReads = await testDb.collection('system.profile')
+      .find({ ns: `${testDb.databaseName}.clients`, op: { $in: ['query', 'command'] } }).toArray()
+    check('verify still answers with the linked account filling the blanks',
+      verifiedOne.body.valid === true && verifiedOne.body.license.clientName === 'Lookup Account', verifiedOne.body)
+    check('verify reads at most one client document, of 32',
+      clientReads.length > 0 && clientReads.every((r) => (r.docsExamined ?? 0) <= 1),
+      clientReads.map((r) => ({ docsExamined: r.docsExamined, plan: r.planSummary })))
+    check('...through the clients.username index',
+      clientReads.some((r) => /IXSCAN \{ username: 1 \}/.test(r.planSummary || '')),
+      clientReads.map((r) => r.planSummary))
+    await testDb.collection('system.profile').drop().catch(() => {})
+    await rawLicenses.deleteOne({ _id: profiled._id })
+    await rawClients.deleteMany({ _id: { $in: lookupAccounts.map((c) => c._id) } })
 
     console.log('\n-- digital diya validate --')
     const DD_IP = '203.0.113.11'
@@ -466,6 +736,37 @@ const server = app.listen(0, async () => {
     const noPin = await pinAsk({ licenseKey: ddLive.licenseKey, pin: '' })
     check('details: with no CLIENT_PIN on the server, nothing opens (503)',
       noPin.status === 503 && noPin.body.code === 'PIN_NOT_CONFIGURED', noPin.body)
+
+    // Production refuses a missing PIN and the old example value 1968. Its own
+    // IP, so these calls do not use up the PIN limiter the guesses below test.
+    const PROD_PIN_IP = '198.51.100.40'
+    const realNodeEnv = process.env.NODE_ENV
+    try {
+      process.env.NODE_ENV = 'production'
+      process.env.CLIENT_PIN = '1968'
+      const prodExample = await pinAsk({ licenseKey: ddLive.licenseKey, productName: 'Digital Diya', pin: '1968' }, PROD_PIN_IP)
+      check('details in production: the example PIN 1968 counts as not configured (503)',
+        prodExample.status === 503 && prodExample.body.code === 'PIN_NOT_CONFIGURED' && !prodExample.body.license,
+        prodExample.body)
+      process.env.CLIENT_PIN = ''
+      const prodMissing = await pinAsk({ licenseKey: ddLive.licenseKey, productName: 'Digital Diya', pin: '1968' }, PROD_PIN_IP)
+      check('details in production: a missing PIN is 503 PIN_NOT_CONFIGURED',
+        prodMissing.status === 503 && prodMissing.body.code === 'PIN_NOT_CONFIGURED', prodMissing.body)
+      process.env.CLIENT_PIN = '482913'
+      const prodUnique = await pinAsk({ licenseKey: ddLive.licenseKey, productName: 'Digital Diya', pin: '482913' }, PROD_PIN_IP)
+      check('details in production: a unique PIN works',
+        prodUnique.status === 200 && prodUnique.body.license?.licenseKey === ddLive.licenseKey, prodUnique.body)
+      check('details in production: 1968 is now simply the wrong PIN',
+        (await pinAsk({ licenseKey: ddLive.licenseKey, productName: 'Digital Diya', pin: '1968' }, PROD_PIN_IP)).status === 401)
+    } finally {
+      process.env.NODE_ENV = realNodeEnv
+    }
+    const { staffPin } = require(path.join(BACKEND, 'utils/staffPin.js'))
+    check('staffPin: 1968 is accepted outside production',
+      staffPin({ NODE_ENV: 'test', CLIENT_PIN: '1968' }).configured === true)
+    check('staffPin: a malformed PIN is not configured anywhere',
+      staffPin({ NODE_ENV: 'test', CLIENT_PIN: '12ab' }).configured === false &&
+        staffPin({ NODE_ENV: 'production', CLIENT_PIN: '123' }).configured === false)
     process.env.CLIENT_PIN = '1968'
     const guesses = []
     for (let i = 0; i < 11; i += 1) guesses.push((await pinAsk({ licenseKey: ddLive.licenseKey, pin: '0000' }, '203.0.113.32')).status)
@@ -556,9 +857,15 @@ const server = app.listen(0, async () => {
     check('adds a client with credentials', created.status === 201, created.body)
     check('the password hash is never returned',
       !JSON.stringify(created.body).includes('passwordHash'), created.body)
-    // The console shows the password, so admin responses carry it deliberately.
-    check('admin responses include the readable password',
-      created.body.client.password === 'ClientPass123', created.body.client)
+    // Hash only: not even the admin who typed it gets the password back.
+    check('admin responses never carry the password',
+      !('password' in created.body.client) && !JSON.stringify(created.body).includes('ClientPass123'),
+      created.body)
+    check('a typed password is not echoed as a generated one',
+      !('generatedPassword' in created.body), created.body)
+    check('only the hash is stored',
+      await db.getDb().collection('clients').findOne({ username: 'john.doe' })
+        .then((d) => d && !('password' in d) && typeof d.passwordHash === 'string'))
     check('rejects a duplicate username',
       (await call('POST', '/api/clients', { ...newClient, username: 'JOHN.DOE' })).status === 409)
     check('rejects a short password',
@@ -573,8 +880,13 @@ const server = app.listen(0, async () => {
       johnNow.hasLogin === true && johnNow.totalLicenses === 5, johnNow)
     check('no duplicate row is created for the same username',
       merged.body.clients.filter((c) => c.username === 'john.doe').length === 1)
-    check('the client list carries the readable password',
-      johnNow.password === 'ClientPass123', johnNow.password)
+    check('the client list carries no password',
+      merged.body.clients.every((c) => !('password' in c) && !('passwordHash' in c)) &&
+        !JSON.stringify(merged.body).includes('ClientPass123'), johnNow)
+    const johnOne = await call('GET', `/api/clients/${created.body.client.id}`)
+    check('nor does GET /api/clients/:id',
+      johnOne.status === 200 && !('password' in johnOne.body.client) &&
+        !JSON.stringify(johnOne.body).includes('ClientPass123'), johnOne.body)
 
     // The name typed on the form is what the license keeps, even when the
     // user ID matches an account with a different name on it.
@@ -774,9 +1086,11 @@ const server = app.listen(0, async () => {
       formSignIn.body)
     const formRow = (await call('GET', '/api/clients')).body.clients
       .filter((c) => c.username === 'form.poc@test.com')
-    check('one POC account holds the company and readable password',
+    check('one POC account holds the company, and no readable password',
       formRow.length === 1 && formRow[0].hasLogin && formRow[0].companyName === 'Form Co' &&
-        formRow[0].password === 'FormPass123', formRow)
+        !('password' in formRow[0]), formRow)
+    check('a typed password is never sent back as pocPassword',
+      !('pocPassword' in fromForm.body), fromForm.body)
 
     const second = await call('POST', '/api/licenses', pocLic({ productName: 'Second Product' }))
     const formRows = (await call('GET', '/api/clients')).body.clients
@@ -850,6 +1164,137 @@ const server = app.listen(0, async () => {
       await call('DELETE', `/api/clients/${(await accountRow(username)).id}`)
     }
 
+    console.log('\n-- generated client passwords (hash only, shown once) --')
+    const GENERATED = /^[A-HJKMNP-TV-Z2-9]{12}$/
+    const clientService = require(path.join(BACKEND, 'services/clientService.js'))
+    const samples = Array.from({ length: 500 }, () => clientService.generatePassword())
+    check('generated passwords are 12 characters with no look-alikes or separators',
+      samples.every((p) => GENERATED.test(p)), samples.find((p) => !GENERATED.test(p)))
+    check('generated passwords differ each time', new Set(samples).size === samples.length)
+    check('every allowed character turns up', new Set(samples.join('')).size === 30)
+
+    const genLogin = (password, username) =>
+      call('POST', '/api/clients/login', { username, password }, { auth: false, ip: '203.0.113.20' })
+    const rawClientsCol = db.getDb().collection('clients')
+
+    const gen = await call('POST', '/api/clients', {
+      clientName: 'Gen Poc', companyName: 'Gen Co', username: 'gen.poc@test.com',
+    })
+    check('a client added without a password gets a generated one, once',
+      gen.status === 201 && GENERATED.test(gen.body.generatedPassword), gen.body)
+    check('which signs in to the product',
+      (await genLogin(gen.body.generatedPassword, 'gen.poc@test.com')).status === 200)
+    const genStored = await rawClientsCol.findOne({ _id: gen.body.client.id })
+    check('and is stored only as a hash',
+      genStored && !('password' in genStored) && genStored.passwordHash !== gen.body.generatedPassword &&
+        !JSON.stringify(genStored).includes(gen.body.generatedPassword))
+    const genList = JSON.stringify((await call('GET', '/api/clients')).body)
+    const genOne = JSON.stringify((await call('GET', `/api/clients/${gen.body.client.id}`)).body)
+    check('it never appears again: not in the list, not in GET /:id',
+      !genList.includes(gen.body.generatedPassword) && !genOne.includes(gen.body.generatedPassword))
+
+    console.log('\n-- reset a client password --')
+    // A record from before hash-only, still carrying a readable copy.
+    await rawClientsCol.updateOne({ _id: gen.body.client.id }, { $set: { password: 'OldReadable1' } })
+    const reset = await call('POST', `/api/clients/${gen.body.client.id}/reset-password`)
+    check('reset returns a new generated password',
+      reset.status === 200 && GENERATED.test(reset.body.generatedPassword) &&
+        reset.body.generatedPassword !== gen.body.generatedPassword, reset.body)
+    check('reset response carries no hash or readable copy',
+      !JSON.stringify(reset.body).includes('passwordHash') && !('password' in reset.body.client))
+    check('the old password stops working',
+      (await genLogin(gen.body.generatedPassword, 'gen.poc@test.com')).status === 401)
+    check('the new one works',
+      (await genLogin(reset.body.generatedPassword, 'gen.poc@test.com')).status === 200)
+    check('reset drops a leftover readable copy',
+      !('password' in (await rawClientsCol.findOne({ _id: gen.body.client.id }))))
+    check('reset needs a token',
+      (await call('POST', `/api/clients/${gen.body.client.id}/reset-password`, null,
+        { auth: false })).status === 401)
+    const badReset = await call('POST', '/api/clients/bad!id/reset-password')
+    check('reset with a malformed id -> 400', badReset.status === 400, badReset.body)
+    const missingReset = await call('POST', '/api/clients/0123456789abcdef01234567/reset-password')
+    check('reset of an unknown client -> 404 CLIENT_NOT_FOUND',
+      missingReset.status === 404 && missingReset.body.code === 'CLIENT_NOT_FOUND', missingReset.body)
+    await call('DELETE', `/api/clients/${gen.body.client.id}`)
+
+    console.log('\n-- license form: POC login without a password --')
+    const formLic = (over = {}) => newLicense({
+      clientName: 'Gen Form Poc', clientUserId: 'gen.form@test.com', companyName: 'Gen Form Co',
+      pocLogin: true, duration: 'custom', startDate: '2020-01-01', expiryDate: '2099-01-01',
+      ...over,
+    })
+    const genA = await call('POST', '/api/licenses', formLic())
+    check('a license for a new POC returns pocPassword once',
+      genA.status === 201 && GENERATED.test(genA.body.pocPassword), genA.body)
+    check('the POC signs in with it and sees the license',
+      (await genLogin(genA.body.pocPassword, 'gen.form@test.com')).body.licenses
+        ?.some((l) => l.licenseKey === genA.body.license.licenseKey))
+    const genB = await call('POST', '/api/licenses', formLic({ productName: 'Second Product' }))
+    check('a license for an existing POC returns no password',
+      genB.status === 201 && !('pocPassword' in genB.body), genB.body)
+    const genEdit = await call('PUT', `/api/licenses/${genA.body.license.id}`, formLic({ soldBy: 'Dana Seller' }))
+    check('editing a license without a password returns none',
+      genEdit.status === 200 && !('pocPassword' in genEdit.body), genEdit.body)
+    check("and keeps the account's password",
+      (await genLogin(genA.body.pocPassword, 'gen.form@test.com')).status === 200)
+    // Moving one of the two licenses to a new email makes a new account.
+    const genMoved = await call('PUT', `/api/licenses/${genB.body.license.id}`, formLic({
+      clientName: 'Gen Moved Poc', companyName: 'Gen Moved Co', clientUserId: 'gen.moved@test.com',
+    }))
+    check('an edit that creates a POC account returns its pocPassword',
+      genMoved.status === 200 && GENERATED.test(genMoved.body.pocPassword) &&
+        (await genLogin(genMoved.body.pocPassword, 'gen.moved@test.com')).status === 200, genMoved.body)
+    check('pocLogin with a non-email is refused',
+      (await call('POST', '/api/licenses', formLic({ clientUserId: 'not-an-email' }))).status === 400)
+    check('pocLogin without a company is refused',
+      (await call('POST', '/api/licenses', formLic({ companyName: '' }))).status === 400)
+    check('pocLogin must be a boolean',
+      (await call('POST', '/api/licenses', formLic({ pocLogin: 'yes' }))).status === 400)
+    check('no stored client carries a readable password',
+      (await rawClientsCol.countDocuments({ password: { $exists: true } })) === 0)
+
+    await call('DELETE', `/api/licenses/${genA.body.license.id}`)
+    await call('DELETE', `/api/licenses/${genB.body.license.id}`)
+    for (const username of ['gen.form@test.com', 'gen.moved@test.com']) {
+      await call('DELETE', `/api/clients/${(await accountRow(username)).id}`)
+    }
+
+    console.log('\n-- strip-client-passwords migration --')
+    const { strip, parseArgs: parseStripArgs } = require(path.join(BACKEND, 'scripts/stripClientPasswords.js'))
+    check('strip: parses --dry-run', parseStripArgs(['--dry-run']).dryRun === true)
+    let stripArgError = null
+    try { parseStripArgs(['--force']) } catch (e) { stripArgError = e }
+    check('strip: refuses unknown options', Boolean(stripArgError))
+
+    const bcryptjs = require('bcryptjs')
+    await rawClientsCol.insertMany([
+      { _id: 'strip0000000000000000001', username: 'strip.hashed', clientName: 'Strip One',
+        companyName: 'Strip One Co', passwordHash: await bcryptjs.hash('Hashed12345', 4), password: 'Hashed12345' },
+      { _id: 'strip0000000000000000002', username: 'strip.nohash', clientName: 'Strip Two',
+        companyName: 'Strip Two Co', password: 'NoHash12345' },
+      { _id: 'strip0000000000000000003', username: 'strip.clean', clientName: 'Strip Three',
+        companyName: 'Strip Three Co', passwordHash: await bcryptjs.hash('Clean123456', 4) },
+    ])
+    const stripDry = await strip(db.getDb(), { dryRun: true })
+    check('strip dry run: counts what it would change',
+      stripDry.stripped === 2 && stripDry.hashedFirst === 1 && stripDry.dryRun, stripDry)
+    check('strip dry run: writes nothing',
+      (await rawClientsCol.countDocuments({ password: { $exists: true } })) === 2)
+    const stripRun = await strip(db.getDb())
+    check('strip: removes every readable password',
+      stripRun.stripped === 2 && (await rawClientsCol.countDocuments({ password: { $exists: true } })) === 0,
+      stripRun)
+    check('strip: keeps an existing hash working',
+      (await genLogin('Hashed12345', 'strip.hashed')).status === 200)
+    check('strip: hashes a password that had no hash, so that POC can still sign in',
+      (await genLogin('NoHash12345', 'strip.nohash')).status === 200)
+    check('strip: an already clean account is left alone',
+      (await genLogin('Clean123456', 'strip.clean')).status === 200)
+    const stripAgain = await strip(db.getDb())
+    check('strip: running it again changes nothing', stripAgain.stripped === 0, stripAgain)
+    await rawClientsCol.deleteMany({ _id: { $in: ['strip0000000000000000001', 'strip0000000000000000002', 'strip0000000000000000003'] } })
+
     console.log('\n-- update + delete --')
     const upd = await call('PUT', `/api/licenses/${lic.id}`, { soldBy: 'Dana Seller', duration: '1_month' })
     check('updates fields', upd.body.license.soldBy === 'Dana Seller', upd.body)
@@ -879,14 +1324,52 @@ const server = app.listen(0, async () => {
       (await call('POST', '/api/admin/change-password', {
         currentPassword: ADMIN.password, newPassword: 'short', confirmPassword: 'short',
       })).status === 400)
+    check('change-password needs a token',
+      (await call('POST', '/api/admin/change-password', {
+        currentPassword: ADMIN.password, newPassword: 'BrandNewPass1', confirmPassword: 'BrandNewPass1',
+      }, { auth: false })).status === 401)
+
+    // A second session, as from another tab or device, and a token signed the
+    // way tokens were before session versions existed (no `ver`).
+    const otherSession = (await call('POST', '/api/admin/login', ADMIN, { auth: false })).body.token
+    const jwt = require('jsonwebtoken')
+    const legacyToken = jwt.sign(
+      { sub: me.body.admin.id, email: ADMIN.email, role: 'admin' },
+      process.env.JWT_SECRET, { expiresIn: '1h' }
+    )
+    check('before any change, a token without a version counts as version 0',
+      (await call('GET', '/api/admin/me', null, { token: legacyToken })).status === 200)
+
+    const oldToken = token
     const changed = await call('POST', '/api/admin/change-password', {
       currentPassword: ADMIN.password, newPassword: 'BrandNewPass1', confirmPassword: 'BrandNewPass1',
     })
-    check('changes the password', changed.status === 200, changed.body)
+    check('changes the password and returns a fresh token',
+      changed.status === 200 && typeof changed.body.token === 'string' && changed.body.token !== oldToken,
+      changed.body)
+    const revoked = await call('GET', '/api/admin/me', null, { token: oldToken })
+    check('the token that made the change now gets 401',
+      revoked.status === 401 && revoked.body.code === 'INVALID_TOKEN', revoked.body)
+    check('another session from before the change gets 401',
+      (await call('GET', '/api/licenses', null, { token: otherSession })).status === 401)
+    check('an old token without a version gets 401 too',
+      (await call('GET', '/api/admin/me', null, { token: legacyToken })).status === 401)
+    token = changed.body.token
+    const fresh = await call('GET', '/api/admin/me')
+    check('the fresh token works', fresh.status === 200 && fresh.body.admin.email === ADMIN.email, fresh.body)
     check('the old password no longer works',
       (await call('POST', '/api/admin/login', ADMIN, { auth: false })).status === 401)
     check('the new password works',
       (await call('POST', '/api/admin/login', { email: ADMIN.email, password: 'BrandNewPass1' })).status === 200)
+
+    // npm run create-admin is the lock-out recovery path, so a reset revokes too.
+    const beforeReset = token
+    await adminService.upsertAdmin({ email: ADMIN.email, password: 'ResetPass123' })
+    check('a create-admin reset signs out existing sessions',
+      (await call('GET', '/api/admin/me', null, { token: beforeReset })).status === 401)
+    const afterReset = await call('POST', '/api/admin/login', { email: ADMIN.email, password: 'ResetPass123' }, { auth: false })
+    check('signing in after a reset works', afterReset.status === 200, afterReset.body)
+    token = afterReset.body.token
 
     console.log('\n-- email configuration --')
     const e1 = await call('POST', '/api/admin/emails', { email: 'first@test.com' })

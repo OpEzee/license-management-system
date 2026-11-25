@@ -46,6 +46,7 @@ export default function ClientDetails() {
       const data = await productClientApi.verify({
         licenseKey: params.key,
         productName: params.product || undefined,
+        machineNumber: params.machine || undefined,
       })
       setLicense({ ...data.license, status: data.valid ? 'active' : data.license?.status })
     } catch (err) {
@@ -54,7 +55,7 @@ export default function ClientDetails() {
     } finally {
       setLoading(false)
     }
-  }, [params.key, params.product])
+  }, [params.key, params.product, params.machine])
 
   useEffect(() => {
     if (!handed) load()
