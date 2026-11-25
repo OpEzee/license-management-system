@@ -52,6 +52,33 @@ try {
   check('one row per client id', matchClients([ravi1, ravi1, meena], 'a').length === 2)
   check('skips clients without a name', matchClients([{ id: 'z', username: 'a@b.c' }], 'a').length === 0)
 
+  console.log('\n-- ranking --')
+  const names = (list) => list.map((c) => c.clientName)
+  const pool = [
+    { id: 'e', clientName: 'Zed', username: 'anil@zed.in', companyName: 'Zed Co' }, // email only
+    { id: 'd', clientName: 'Vikram', username: 'v@x.in', companyName: 'Anil Traders' }, // company
+    { id: 'c', clientName: 'Shanil', username: 's@x.in', companyName: 'X' }, // name contains
+    { id: 'b', clientName: 'Anil Rao', username: 'ar@x.in', companyName: 'X' }, // starts with
+    { id: 'a', clientName: 'anil Bose', username: 'ab@x.in', companyName: 'X' }, // starts with
+  ]
+  const ranked = names(matchClients(pool, 'anil'))
+  check(
+    'starts-with, then contains, then company, then email',
+    JSON.stringify(ranked) === JSON.stringify(['anil Bose', 'Anil Rao', 'Shanil', 'Vikram', 'Zed']),
+    ranked
+  )
+  const twins = [
+    { id: 't2', clientName: 'Ravi', username: 'r2@x.in', companyName: 'Globex' },
+    { id: 't1', clientName: 'Ravi', username: 'r1@x.in', companyName: 'Acme' },
+  ]
+  check('same names sort by company', matchClients(twins, 'ravi')[0].id === 't1')
+  // All 20 "Client N" contain "en"; only the last one starts with it.
+  const late = [...many, { id: 'late', clientName: 'Endo' }]
+  check(
+    'ranks before the cap, so a late starts-with match still shows',
+    matchClients(late, 'en')[0].id === 'late'
+  )
+
   console.log('\n-- highlighting --')
   const parts = highlightParts('Ravi Kumar', 'ku')
   check(

@@ -17,7 +17,7 @@ const MAX_RESULTS = 8
 function Highlighted({ text, query }) {
   return highlightParts(text, query).map((p, i) =>
     p.match ? (
-      <mark key={i} className="rounded-sm bg-brand-100 text-inherit dark:bg-brand-500/30">
+      <mark key={i} className="bg-transparent font-semibold text-brand-700 dark:text-brand-300">
         {p.text}
       </mark>
     ) : (
@@ -157,7 +157,7 @@ export default function ClientCombobox({
             role="listbox"
             aria-label="Matching POCs"
             style={{ position: 'fixed', left: position.left, top: position.top, width: position.width }}
-            className="z-[60] max-h-[280px] overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-xl shadow-slate-900/10 dark:border-slate-700 dark:bg-slate-900 dark:shadow-black/40"
+            className="scrollbar-themed z-[60] max-h-[280px] overflow-y-auto [scrollbar-width:thin] [scrollbar-color:theme(colors.slate.300)_transparent] dark:[scrollbar-color:theme(colors.slate.600)_transparent] rounded-lg border border-slate-200 bg-white py-1 shadow-xl shadow-slate-900/10 dark:border-slate-700 dark:bg-slate-900 dark:shadow-black/40"
           >
             {rows.map((row, i) => {
               const isActive = i === active

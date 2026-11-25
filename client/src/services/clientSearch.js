@@ -6,7 +6,24 @@
 const norm = (s) => String(s || '').toLowerCase()
 
 /**
- * Clients whose name, username or company contains `query`, case-insensitively.
+ * How well a client matches, lower first: the admin is usually typing a name,
+ * so name hits outrank company hits, and an email-only hit comes last. null
+ * when nothing matches.
+ */
+function rankOf(c, q) {
+  const name = norm(c.clientName)
+  if (name.startsWith(q)) return 0
+  if (name.includes(q)) return 1
+  if (norm(c.companyName).includes(q)) return 2
+  if (norm(c.username).includes(q)) return 3
+  return null
+}
+
+const byText = (a, b) => norm(a).localeCompare(norm(b))
+
+/**
+ * Clients whose name, company or username (their email) contains `query`,
+ * case-insensitively, best match first and alphabetical within a rank.
  * An empty query matches nothing: the list should only open once the admin
  * starts typing, not dump every client on focus.
  */
@@ -14,18 +31,26 @@ export function matchClients(clients, query, limit = 8) {
   const q = norm(query).trim()
   if (!q) return []
   const seen = new Set()
-  const out = []
+  const ranked = []
   for (const c of clients) {
     if (!c || !c.clientName) continue
     // The list can hold the same account twice; one row per client.
     const key = c.id || `${c.clientName}|${c.username || ''}`
     if (seen.has(key)) continue
-    if (![c.clientName, c.username, c.companyName].some((f) => norm(f).includes(q))) continue
+    const rank = rankOf(c, q)
+    if (rank === null) continue
     seen.add(key)
-    out.push(c)
-    if (out.length >= limit) break
+    ranked.push({ c, rank })
   }
-  return out
+  // Ranked before the cut, so a strong match late in the list still shows.
+  ranked.sort(
+    (a, b) =>
+      a.rank - b.rank ||
+      byText(a.c.clientName, b.c.clientName) ||
+      byText(a.c.companyName, b.c.companyName) ||
+      byText(a.c.username, b.c.username)
+  )
+  return ranked.slice(0, limit).map((r) => r.c)
 }
 
 /**
