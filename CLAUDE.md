@@ -80,7 +80,9 @@ This is the admin dashboard (React 18 + Vite + Tailwind) and license API (Expres
 
 ## Git
 
-- Branch from `main`. Use Conventional Commit prefixes: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`.
+- The working branch is `production`. `main` is outdated (no MongoDB, none of the recent work), so don't branch from it or open PRs against it.
+- Until the developer decides otherwise, commit locally on `production`, and never push without asking first.
+- Use Conventional Commit prefixes: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`.
 - Keep each pull request to one concern. Each description covers what changed, why, and how it was tested.
 
 ## How to work with me
