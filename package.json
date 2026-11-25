@@ -11,7 +11,7 @@
     "build": "vite build",
     "start": "node server/server.js",
     "test": "node server/tests/api.test.js && npm run test:client",
-    "test:client": "node client/tests/dashboardStats.test.mjs",
+    "test:client": "node client/tests/dashboardStats.test.mjs && node client/tests/clientSearch.test.mjs",
     "create-admin": "node server/scripts/createAdmin.js",
     "check-mail": "node server/scripts/checkMail.js",
     "backup-db": "node server/scripts/backupDb.js",

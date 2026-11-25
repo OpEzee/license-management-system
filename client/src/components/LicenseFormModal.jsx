@@ -8,6 +8,7 @@ import DatePicker from './DatePicker'
 import ConfirmDialog from './ConfirmDialog'
 import ClaimedMachines from './ClaimedMachines'
 import ShowOncePassword from './ShowOncePassword'
+import ClientCombobox from './ClientCombobox'
 import { isDigitalDiya } from '../hooks/useLicenses'
 import { DURATIONS, formatDate, previewExpiry, toDateInput } from '../services/format'
 
@@ -168,6 +169,13 @@ export default function LicenseFormModal({
     const matches = accountsNamed(clients, name)
     fillFromAccount(matches.length === 1 ? matches[0] : null, { clientName: name })
   }
+  // A suggestion names one account, so it links that account even when
+  // others share the name. null is the "New POC" row: the typed name stays.
+  const choosePoc = (client) => {
+    if (!client) return
+    if (client.hasLogin && client.username) fillFromAccount(client, { clientName: client.clientName })
+    else setPocName(client.clientName)
+  }
 
   // For a preset duration the expiry is derived; the field becomes read-only.
   const computedExpiry = useMemo(
@@ -205,10 +213,6 @@ export default function LicenseFormModal({
 
   // A POC is one person with many licenses. The email links the license to
   // that POC's account, so their product login sees the new license.
-  const pocNames = useMemo(
-    () => [...new Set(clients.map((c) => c.clientName).filter(Boolean))].sort(),
-    [clients]
-  )
   const pocAccounts = useMemo(
     () => accountsNamed(clients, values.clientName),
     [clients, values.clientName]
@@ -346,20 +350,15 @@ export default function LicenseFormModal({
             </label>
             {/* Typed, with existing POCs suggested: picking one files this
                 license under that POC instead of starting a new one. */}
-            <input
+            <ClientCombobox
               id="clientName"
-              className={`input ${errors.clientName ? 'border-red-400' : ''}`}
-              placeholder="Name of the point of contact"
-              list="poc-names"
-              autoComplete="off"
               value={values.clientName}
-              onChange={(e) => setPocName(e.target.value)}
+              clients={clients}
+              invalid={Boolean(errors.clientName)}
+              placeholder="Name of the point of contact"
+              onInputChange={setPocName}
+              onSelect={choosePoc}
             />
-            <datalist id="poc-names">
-              {pocNames.map((name) => (
-                <option key={name} value={name} />
-              ))}
-            </datalist>
             {pocAccounts.length > 1 && (
               <select
                 className="input mt-2"
