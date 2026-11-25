@@ -9,6 +9,7 @@ const { requireAdmin } = require('../middleware/auth');
 const { verifyLimiter, pinLimiter } = require('../middleware/rateLimiter');
 const { DURATION_KEYS } = require('../utils/licenseDates');
 const { MIN_PASSWORD_LENGTH } = require('../services/clientService');
+const { MAX_SCREENS_LIMIT } = require('../services/licenseService');
 
 const router = express.Router();
 
@@ -41,21 +42,25 @@ const isoDate = (field, label, { optional = false } = {}) => {
     .withMessage(`${label} must be a valid date`);
 };
 
-// The POC's product sign-in, entered on the license form. Optional on the wire
-// so a license can still be saved without touching the account; when it is
-// sent, the email it signs in with has to be a real address.
+// The POC's product sign-in, saved from the license form (`pocLogin: true`).
+// Optional on the wire so a license can still be saved without touching the
+// account. The dashboard sends no password (a new account gets a generated
+// one); the admin API may. Either way the email it signs in with has to be a
+// real address.
+const wantsPocLogin = (req) => req.body.pocLogin === true || Boolean(req.body.password);
 const pocLogin = [
+  body('pocLogin').optional().isBoolean({ strict: true }).withMessage('pocLogin must be true or false'),
   body('password')
     .optional({ values: 'falsy' })
     .isString()
     .isLength({ min: MIN_PASSWORD_LENGTH, max: 128 })
     .withMessage(`Password must be between ${MIN_PASSWORD_LENGTH} and 128 characters`),
   body('clientUserId')
-    .if(body('password').notEmpty())
+    .if((value, { req }) => wantsPocLogin(req))
     .isEmail()
     .withMessage('Enter a valid email address'),
   body('companyName')
-    .if(body('password').notEmpty())
+    .if((value, { req }) => wantsPocLogin(req))
     .notEmpty()
     .withMessage('Company name is required'),
 ];
@@ -70,13 +75,35 @@ const keyCheck = [
     .matches(/^[A-Za-z0-9\s-]+$/)
     .withMessage('License key contains invalid characters'),
   body('productName').optional().trim().escape().isLength({ max: 120 }),
-  // A key is not tied to a machine. Products built before that may still send
-  // machineNumber; it is accepted and ignored.
 ];
+
+// The machine a product runs on, as /verify and /sync count it against the
+// license's max screens. Optional on the wire: the service decides whether a
+// request without one is allowed. Other endpoints ignore it, so only these two
+// validate it.
+const MACHINE_PATTERN = /^[A-Za-z0-9._:-]+$/;
+const machineMessage = 'Machine number may only contain letters, digits and . _ : -';
+const machineCheck = body('machineNumber')
+  .optional({ values: 'falsy' })
+  .isString()
+  .trim()
+  .isLength({ max: 128 })
+  .withMessage('Machine number must be at most 128 characters')
+  .matches(MACHINE_PATTERN)
+  .withMessage(machineMessage);
+
+// Only a missing value is skipped, not a falsy one: 0 must be refused, not
+// quietly turned into the default.
+const maxScreens = () =>
+  body('maxScreens')
+    .optional({ values: 'null' })
+    .isInt({ min: 1, max: MAX_SCREENS_LIMIT })
+    .withMessage(`Max screens must be a whole number from 1 to ${MAX_SCREENS_LIMIT}`)
+    .toInt();
 
 // --- Public (product-facing) -------------------------------------------------
 // Mounted before the admin guard, so products never need a token.
-router.post('/verify', verifyLimiter, keyCheck, validate, controller.verify);
+router.post('/verify', verifyLimiter, keyCheck, machineCheck, validate, controller.verify);
 // The licence details behind the staff PIN (hosted /client/pin page).
 router.post(
   '/details',
@@ -86,7 +113,7 @@ router.post(
   validate,
   controller.details
 );
-router.post('/sync', verifyLimiter, keyCheck, validate, controller.sync);
+router.post('/sync', verifyLimiter, keyCheck, machineCheck, validate, controller.sync);
 
 // Digital Diya's own pair: a yes/no check, and the auto-sync it polls. Only
 // the key is read: the product is fixed server-side, so a key for any other
@@ -195,6 +222,8 @@ router.post(
     isoDate('startDate', 'Start date'),
     // Only required for the custom duration; the service enforces that.
     isoDate('expiryDate', 'Expiry date', { optional: true }),
+    // Left out means the default of one machine.
+    maxScreens(),
     ...pocLogin,
   ],
   validate,
@@ -215,10 +244,28 @@ router.put(
     duration({ optional: true }),
     isoDate('startDate', 'Start date', { optional: true }),
     isoDate('expiryDate', 'Expiry date', { optional: true }),
+    maxScreens(),
     ...pocLogin,
   ],
   validate,
   controller.update
+);
+
+router.delete(
+  '/:id/machines/:machineNumber',
+  [
+    param('id').trim().notEmpty(),
+    param('machineNumber')
+      .trim()
+      .notEmpty()
+      .withMessage('Machine number is required')
+      .isLength({ max: 128 })
+      .withMessage('Machine number must be at most 128 characters')
+      .matches(MACHINE_PATTERN)
+      .withMessage(machineMessage),
+  ],
+  validate,
+  controller.releaseMachine
 );
 
 router.put(

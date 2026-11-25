@@ -7,21 +7,6 @@ import { formatDate } from '../services/format'
 
 const isEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim())
 
-/** The message body the admin sends to the client. */
-function buildMessage(license) {
-  return [
-    `Hello ${license.clientName},`,
-    '',
-    `Here is your license for ${license.productName}:`,
-    '',
-    `License Key: ${license.licenseKey}`,
-    `Starts on:   ${formatDate(license.startDate)}`,
-    `Expires on:  ${formatDate(license.expiryDate)}`,
-    '',
-    'Enter this key in the product to activate it.',
-  ].join('\n')
-}
-
 /**
  * Picks recipients for a license and hands off to the admin's mail client.
  * Addresses come from Settings -> Email Configuration, and a new one can be
@@ -105,21 +90,6 @@ export default function ShareLicenseModal({ open, license, onClose }) {
       setAdding(false)
     }
     return undefined
-  }
-
-  const copyDetails = async () => {
-    const text = buildMessage(license)
-    try {
-      await navigator.clipboard.writeText(text)
-    } catch {
-      const el = document.createElement('textarea')
-      el.value = text
-      document.body.appendChild(el)
-      el.select()
-      document.execCommand('copy')
-      document.body.removeChild(el)
-    }
-    toast.success('License details copied')
   }
 
   const share = async () => {
@@ -254,9 +224,6 @@ export default function ShareLicenseModal({ open, license, onClose }) {
         <button type="button" className="btn-secondary" onClick={onClose}>
           Cancel
         </button>
-        {/* <button type="button" className="btn-secondary" onClick={copyDetails}>
-          Copy details
-        </button> */}
         <button
           type="button"
           className="btn-primary"

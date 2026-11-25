@@ -15,9 +15,17 @@ const me = asyncHandler(async (req, res) => {
   res.json({ success: true, admin: await adminService.getAdminById(req.admin.id) });
 });
 
+/**
+ * Every older session is signed out by the change; the fresh token keeps the
+ * admin who made it signed in on this device.
+ */
 const changePassword = asyncHandler(async (req, res) => {
-  await adminService.changePassword(req.admin.id, req.body);
-  res.json({ success: true, message: 'Password changed successfully' });
+  const { token } = await adminService.changePassword(req.admin.id, req.body);
+  res.json({
+    success: true,
+    message: 'Password changed. You have been signed out everywhere else.',
+    token,
+  });
 });
 
 const listEmails = asyncHandler(async (req, res) => {

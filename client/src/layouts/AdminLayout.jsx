@@ -17,12 +17,17 @@ const ICONS = {
   settings:
     'M9.81 6.31 L10.4 3.75 L13.6 3.75 L14.19 6.31 L14.48 6.43 L16.7 5.04 L18.96 7.3 L17.57 9.52 L17.69 9.81 L20.25 10.4 L20.25 13.6 L17.69 14.19 L17.57 14.48 L18.96 16.7 L16.7 18.96 L14.48 17.57 L14.19 17.69 L13.6 20.25 L10.4 20.25 L9.81 17.69 L9.52 17.57 L7.3 18.96 L5.04 16.7 L6.43 14.48 L6.31 14.19 L3.75 13.6 L3.75 10.4 L6.31 9.81 L6.43 9.52 L5.04 7.3 L7.3 5.04 L9.52 6.43 Z M9.5 12a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0 -5 0Z',
   signOut: 'M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1',
+  // A question mark in an outlined circle. The dot is a 0.01-long segment,
+  // which the round line cap draws as a dot at the stroke's width.
+  help:
+    'M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z',
 }
 
 const MAIN_NAV = [
   { to: '/', label: 'Dashboard', icon: ICONS.dashboard },
   { to: '/licenses', label: 'Licenses', icon: ICONS.licenses },
   { to: '/products', label: 'Products', icon: ICONS.products },
+  { to: '/help', label: 'Help', icon: ICONS.help },
 ]
 
 const linkClasses = ({ isActive }) =>

@@ -51,10 +51,23 @@ async function findAdminByEmail(email) {
   return admins().findOne({ email: String(email).trim().toLowerCase() });
 }
 
-function signToken(admin) {
-  return jwt.sign({ sub: admin.id, email: admin.email, role: 'admin' }, jwtSecret(), {
-    expiresIn: process.env.TOKEN_EXPIRES_IN || '12h',
-  });
+/**
+ * The admin's session generation. A token carries the generation it was issued
+ * in (`ver`), and changing or resetting the password moves the generation on,
+ * so every token issued before that stops working. Admins and tokens from
+ * before the field existed count as 0, so nobody is signed out by the upgrade.
+ */
+const versionOf = (value) => (Number.isInteger(value) ? value : 0);
+
+const sessionExpired = () =>
+  new ApiError(401, 'Your session has expired. Please sign in again.', 'INVALID_TOKEN');
+
+function signToken(admin, tokenVersion = 0) {
+  return jwt.sign(
+    { sub: admin.id, email: admin.email, role: 'admin', ver: versionOf(tokenVersion) },
+    jwtSecret(),
+    { expiresIn: process.env.TOKEN_EXPIRES_IN || '12h' }
+  );
 }
 
 function verifyToken(token) {
@@ -62,13 +75,25 @@ function verifyToken(token) {
     return jwt.verify(token, jwtSecret());
   } catch {
     // Expired and tampered tokens are deliberately indistinguishable to callers.
-    throw new ApiError(401, 'Your session has expired. Please sign in again.', 'INVALID_TOKEN');
+    throw sessionExpired();
   }
 }
 
 /**
+ * The second half of the admin check, after the signature: the account still
+ * exists and the token is from its current session generation. A revoked
+ * token answers exactly like an expired one.
+ */
+async function assertCurrentSession(payload) {
+  const doc = await admins().findOne({ _id: String(payload.sub) }, { projection: { tokenVersion: 1 } });
+  if (!doc) throw new ApiError(401, 'Account no longer exists', 'ADMIN_NOT_FOUND');
+  if (versionOf(doc.tokenVersion) !== versionOf(payload.ver)) throw sessionExpired();
+}
+
+/**
  * Creates or resets the admin account. Used by `npm run create-admin`; it is
- * not reachable over HTTP.
+ * not reachable over HTTP. A reset is the lock-out recovery path, so it also
+ * signs out every existing session: whoever caused the lock-out may hold one.
  */
 async function upsertAdmin({ email, password, name }) {
   const normalized = String(email).trim().toLowerCase();
@@ -84,6 +109,7 @@ async function upsertAdmin({ email, password, name }) {
           name: name || existing.name || 'Administrator',
           updatedAt: new Date(),
         },
+        $inc: { tokenVersion: 1 },
       },
       { returnDocument: 'after' }
     );
@@ -96,6 +122,7 @@ async function upsertAdmin({ email, password, name }) {
     email: normalized,
     passwordHash,
     name: name || 'Administrator',
+    tokenVersion: 0,
     createdAt: now,
     updatedAt: now,
   };
@@ -116,7 +143,7 @@ async function login({ email, password }) {
   }
 
   const admin = toPublicAdmin(doc);
-  return { token: signToken(admin), admin };
+  return { token: signToken(admin, doc.tokenVersion), admin };
 }
 
 async function getAdminById(id) {
@@ -142,17 +169,21 @@ async function changePassword(adminId, { currentPassword, newPassword }) {
     );
   }
 
-  await admins().updateOne(
+  // Moving the session generation on signs out every other tab and device; the
+  // fresh token returned here keeps the admin who made the change signed in.
+  const updated = await admins().findOneAndUpdate(
     { _id: doc._id },
     {
       $set: {
         passwordHash: await bcrypt.hash(String(newPassword), BCRYPT_ROUNDS),
         updatedAt: new Date(),
       },
-    }
+      $inc: { tokenVersion: 1 },
+    },
+    { returnDocument: 'after' }
   );
 
-  return { success: true };
+  return { token: signToken(toPublicAdmin(updated), updated.tokenVersion) };
 }
 
 // --- Email configuration -----------------------------------------------------
@@ -263,6 +294,7 @@ module.exports = {
   upsertAdmin,
   login,
   verifyToken,
+  assertCurrentSession,
   getAdminById,
   changePassword,
   findAdminByEmail,

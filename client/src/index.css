@@ -72,8 +72,24 @@
   filter: invert(1) opacity(0.6);
 }
 
-/* Suggestion lists (datalist) still appear while typing, but without the
-   dropdown arrow that makes the field look like a select. */
-input[list]::-webkit-calendar-picker-indicator {
-  display: none !important;
+/* Thin, themed scrollbar for popup lists. Firefox and current Chrome use the
+   scrollbar-width/-color set on the element; these cover older WebKit, which
+   only understands the pseudo-elements. */
+.scrollbar-themed::-webkit-scrollbar {
+  width: 8px;
+}
+.scrollbar-themed::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-themed::-webkit-scrollbar-thumb {
+  @apply rounded-full border-2 border-solid border-transparent bg-slate-300 bg-clip-padding;
+}
+.scrollbar-themed::-webkit-scrollbar-thumb:hover {
+  @apply bg-slate-400;
+}
+.dark .scrollbar-themed::-webkit-scrollbar-thumb {
+  @apply bg-slate-600;
+}
+.dark .scrollbar-themed::-webkit-scrollbar-thumb:hover {
+  @apply bg-slate-500;
 }

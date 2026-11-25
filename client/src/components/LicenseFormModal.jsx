@@ -5,22 +5,28 @@ import LicenseKey from './LicenseKey'
 import StatusSelect from './StatusSelect'
 import ShareLicenseModal from './ShareLicenseModal'
 import DatePicker from './DatePicker'
+import ConfirmDialog from './ConfirmDialog'
+import ClaimedMachines from './ClaimedMachines'
+import ShowOncePassword from './ShowOncePassword'
+import ClientCombobox from './ClientCombobox'
+import { isDigitalDiya } from '../hooks/useLicenses'
 import { DURATIONS, formatDate, previewExpiry, toDateInput } from '../services/format'
 
 const today = () => new Date().toISOString().slice(0, 10)
 
-const MIN_PASSWORD_LENGTH = 8
+const MAX_SCREENS_LIMIT = 100
 
 const EMPTY = {
   clientName: '',
   clientUserId: '',
   companyName: '',
-  password: '',
   productName: '',
   soldBy: '',
   duration: '1_year',
   startDate: today(),
   expiryDate: '',
+  // Kept as the input's text; sent as a number.
+  maxScreens: '1',
 }
 
 const sameName = (a, b) =>
@@ -32,12 +38,15 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const accountsNamed = (clients, name) =>
   clients.filter((c) => c.hasLogin && c.username && sameName(c.clientName, name))
 
-/** The POC's sign-in fields, as an existing account fills them in. */
-const POC_FIELDS = ['clientUserId', 'companyName', 'password']
+/**
+ * The POC's sign-in fields, as an existing account fills them in. No password:
+ * the server keeps only its hash, generates one for a new account and shows
+ * it once after saving.
+ */
+const POC_FIELDS = ['clientUserId', 'companyName']
 const pocFieldsOf = (account) => ({
   clientUserId: account?.username || '',
   companyName: account?.companyName || '',
-  password: account?.password || '',
 })
 
 function validateForm(values) {
@@ -48,11 +57,15 @@ function validateForm(values) {
   if (!email) errors.clientUserId = 'Email is required'
   else if (!EMAIL_PATTERN.test(email)) errors.clientUserId = 'Enter a valid email address'
   if (!values.companyName.trim()) errors.companyName = 'Company is required'
-  if (!values.password) errors.password = 'Password is required'
-  else if (values.password.length < MIN_PASSWORD_LENGTH)
-    errors.password = `Password must be at least ${MIN_PASSWORD_LENGTH} characters`
   if (!values.soldBy.trim()) errors.soldBy = 'Sold by is required'
   if (!values.startDate) errors.startDate = 'Start date is required'
+
+  // Digital Diya counts its screens itself, so the field is hidden there.
+  if (!isDigitalDiya(values)) {
+    const n = Number(values.maxScreens)
+    if (!String(values.maxScreens).trim() || !Number.isInteger(n) || n < 1 || n > MAX_SCREENS_LIMIT)
+      errors.maxScreens = `Enter a whole number from 1 to ${MAX_SCREENS_LIMIT}`
+  }
 
   if (values.duration === 'custom') {
     if (!values.expiryDate) errors.expiryDate = 'Expiry date is required'
@@ -77,6 +90,10 @@ export default function LicenseFormModal({
   clients = [],
   onClose,
   onSubmit,
+  // (machineNumber) => the updated license, or null if the release failed.
+  onReleaseMachine,
+  // (account) => the new generated password, or null if the reset failed.
+  onResetPassword,
 }) {
   const isEdit = Boolean(license)
   const [values, setValues] = useState(EMPTY)
@@ -86,9 +103,22 @@ export default function LicenseFormModal({
   const [errors, setErrors] = useState({})
   const [submitting, setSubmitting] = useState(false)
   const [sharing, setSharing] = useState(false)
+  // Held here rather than re-read from `license`: a new license prop resets
+  // the whole form, which would throw away edits the admin has not saved yet.
+  const [machines, setMachines] = useState([])
+  const [releaseTarget, setReleaseTarget] = useState(null)
+  const [releasing, setReleasing] = useState(false)
+  const [resetTarget, setResetTarget] = useState(null)
+  const [resetting, setResetting] = useState(false)
+  // { username, password } after a reset: shown here once, then gone for good.
+  const [resetDone, setResetDone] = useState(null)
 
   useEffect(() => {
     if (!open) return
+    setMachines(license?.claimedMachines || [])
+    setReleaseTarget(null)
+    setResetTarget(null)
+    setResetDone(null)
     setErrors({})
     setAutoFilled(pocFieldsOf(null))
     setDeactivated(Boolean(license?.deactivated))
@@ -98,13 +128,12 @@ export default function LicenseFormModal({
             clientName: license.clientName || '',
             clientUserId: license.clientUserId || '',
             companyName: license.companyName || '',
-            // Filled from the POC's account below, once the accounts are loaded.
-            password: '',
             productName: license.productName || '',
             soldBy: license.soldBy || '',
             duration: license.duration || 'custom',
             startDate: toDateInput(license.startDate),
             expiryDate: toDateInput(license.expiryDate),
+            maxScreens: String(license.maxScreens ?? 1),
           }
         : { ...EMPTY, startDate: today() }
     )
@@ -115,7 +144,7 @@ export default function LicenseFormModal({
     setErrors((prev) => ({ ...prev, [name]: undefined }))
   }
 
-  // Picking an existing POC fills in their email, company and password. Each
+  // Picking an existing POC fills in their email and company. Each
   // field is only replaced while it is empty or still holds what was filled
   // in this way — never something the admin typed.
   const [autoFilled, setAutoFilled] = useState(pocFieldsOf(null))
@@ -134,22 +163,19 @@ export default function LicenseFormModal({
       clientName: undefined,
       clientUserId: undefined,
       companyName: undefined,
-      password: undefined,
     }))
   }
   const setPocName = (name) => {
     const matches = accountsNamed(clients, name)
     fillFromAccount(matches.length === 1 ? matches[0] : null, { clientName: name })
   }
-
-  // Editing: the password lives on the POC's account, not the license, and the
-  // accounts may arrive after the form opens.
-  useEffect(() => {
-    if (!open || !license?.clientUserId) return
-    const account = clients.find((c) => c.hasLogin && sameName(c.username, license.clientUserId))
-    if (!account?.password) return
-    setValues((prev) => (prev.password ? prev : { ...prev, password: account.password }))
-  }, [open, license, clients])
+  // A suggestion names one account, so it links that account even when
+  // others share the name. null is the "New POC" row: the typed name stays.
+  const choosePoc = (client) => {
+    if (!client) return
+    if (client.hasLogin && client.username) fillFromAccount(client, { clientName: client.clientName })
+    else setPocName(client.clientName)
+  }
 
   // For a preset duration the expiry is derived; the field becomes read-only.
   const computedExpiry = useMemo(
@@ -158,13 +184,35 @@ export default function LicenseFormModal({
   )
   const isCustom = values.duration === 'custom'
   const shownExpiry = isCustom ? values.expiryDate : computedExpiry
+  // The field follows the product being typed; the machines panel follows the
+  // saved license, whose slots are what /verify actually counts.
+  const showMaxScreens = !isDigitalDiya(values)
+  const showMachines = isEdit && !isDigitalDiya(license)
+
+  const confirmReset = async () => {
+    setResetting(true)
+    try {
+      const password = await onResetPassword(resetTarget)
+      if (password) setResetDone({ username: resetTarget.username, password })
+      setResetTarget(null)
+    } finally {
+      setResetting(false)
+    }
+  }
+
+  const confirmRelease = async () => {
+    setReleasing(true)
+    try {
+      const updated = await onReleaseMachine(releaseTarget.machineNumber)
+      if (updated) setMachines(updated.claimedMachines)
+      setReleaseTarget(null)
+    } finally {
+      setReleasing(false)
+    }
+  }
 
   // A POC is one person with many licenses. The email links the license to
   // that POC's account, so their product login sees the new license.
-  const pocNames = useMemo(
-    () => [...new Set(clients.map((c) => c.clientName).filter(Boolean))].sort(),
-    [clients]
-  )
   const pocAccounts = useMemo(
     () => accountsNamed(clients, values.clientName),
     [clients, values.clientName]
@@ -172,6 +220,17 @@ export default function LicenseFormModal({
   const email = values.clientUserId.trim().toLowerCase()
   // Several POCs share this name: the picker below sets the email to one.
   const chosenAccount = pocAccounts.find((c) => sameName(c.username, email))
+  // The account this email signs in with, whatever name it is under.
+  const emailAccount = EMAIL_PATTERN.test(email)
+    ? clients.find((c) => c.hasLogin && c.id && sameName(c.username, email))
+    : null
+  // Editing onto a new email: the server moves the account when this license
+  // is its only one, and only otherwise makes a new one with a new password.
+  const movingAccount =
+    isEdit &&
+    !emailAccount &&
+    !sameName(email, license.clientUserId) &&
+    clients.some((c) => c.hasLogin && sameName(c.username, license.clientUserId))
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -188,16 +247,18 @@ export default function LicenseFormModal({
         {
           clientName: values.clientName.trim(),
           // The POC's sign-in for the product. The server saves these on the
-          // POC's account and links the license to it by the email.
+          // POC's account and links the license to it by the email; a new
+          // account gets a generated password, returned once.
           clientUserId: email,
           companyName: values.companyName.trim(),
-          password: values.password,
+          pocLogin: true,
           productName: values.productName.trim(),
           soldBy: values.soldBy.trim(),
           duration: values.duration,
           startDate: values.startDate,
           // The backend recomputes this for presets; sending it keeps custom working.
           ...(isCustom ? { expiryDate: values.expiryDate } : {}),
+          ...(showMaxScreens ? { maxScreens: Number(values.maxScreens) } : {}),
         },
         // Status has its own endpoint, so it travels beside the fields.
         isEdit ? { deactivated } : undefined
@@ -239,7 +300,9 @@ export default function LicenseFormModal({
           'Create License'
         )
       }
-      onClose={submitting ? () => {} : onClose}
+      // Escape reaches every open dialog, so while the release confirmation is
+      // up this one ignores it rather than closing underneath.
+      onClose={submitting || releaseTarget || resetTarget ? () => {} : onClose}
       maxWidth="max-w-2xl"
     >
       <form onSubmit={handleSubmit} noValidate>
@@ -267,11 +330,17 @@ export default function LicenseFormModal({
                 }
                 onChange={(next) => setDeactivated(next === 'deactivated')}
               />
-              {/* <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
-                Created {formatDate(license.createdAt)}
-              </p> */}
             </div>
           </div>
+        )}
+
+        {showMachines && (
+          <ClaimedMachines
+            machines={machines}
+            maxScreens={license.maxScreens ?? 1}
+            releasing={releasing}
+            onRelease={setReleaseTarget}
+          />
         )}
 
         <div className="grid gap-4 sm:grid-cols-2">
@@ -281,20 +350,15 @@ export default function LicenseFormModal({
             </label>
             {/* Typed, with existing POCs suggested: picking one files this
                 license under that POC instead of starting a new one. */}
-            <input
+            <ClientCombobox
               id="clientName"
-              className={`input ${errors.clientName ? 'border-red-400' : ''}`}
-              placeholder="Name of the point of contact"
-              list="poc-names"
-              autoComplete="off"
               value={values.clientName}
-              onChange={(e) => setPocName(e.target.value)}
+              clients={clients}
+              invalid={Boolean(errors.clientName)}
+              placeholder="Name of the point of contact"
+              onInputChange={setPocName}
+              onSelect={choosePoc}
             />
-            <datalist id="poc-names">
-              {pocNames.map((name) => (
-                <option key={name} value={name} />
-              ))}
-            </datalist>
             {pocAccounts.length > 1 && (
               <select
                 className="input mt-2"
@@ -384,24 +448,42 @@ export default function LicenseFormModal({
             {fieldError('companyName')}
           </div>
 
-          {/* Shown in plain text: the admin sets it
-              and reads it back to the POC, who signs in to the product with it. */}
+          {/* No password field: the server generates it and shows it once,
+              and keeps only its hash, so it can never be read back here. */}
           <div>
-            <label className="label" htmlFor="password">
-              Password <span className="text-red-500">*</span>
-            </label>
-            <input
-              id="password"
-              type="text"
-              autoComplete="off"
-              spellCheck="false"
-              className={`input ${errors.password ? 'border-red-400' : ''}`}
-              placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
-              value={values.password}
-              onChange={(e) => setField('password', e.target.value)}
-            />
-            {fieldError('password')}
+            <p className="label">Product sign-in</p>
+            {emailAccount ? (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700">
+                <p className="text-sm text-slate-600 dark:text-slate-300">
+                  Signs in with their existing password
+                </p>
+                <button
+                  type="button"
+                  className="btn-secondary px-2.5 py-1 text-xs"
+                  onClick={() => setResetTarget(emailAccount)}
+                  disabled={resetting || submitting}
+                >
+                  Reset password
+                </button>
+              </div>
+            ) : (
+              <p className="rounded-lg border border-dashed border-slate-300 px-3 py-2 text-sm text-slate-600 dark:border-slate-700 dark:text-slate-300">
+                {movingAccount
+                  ? 'Their sign-in moves to this email and keeps its password. If other licenses still use the old email, a new password is generated and shown once after you save.'
+                  : 'A password will be generated and shown once after you save.'}
+              </p>
+            )}
           </div>
+
+          {resetDone && (
+            <div className="sm:col-span-2">
+              <ShowOncePassword
+                label="New POC password"
+                value={resetDone.password}
+                username={resetDone.username}
+              />
+            </div>
+          )}
 
           <div>
             <label className="label" htmlFor="soldBy">
@@ -417,9 +499,10 @@ export default function LicenseFormModal({
             {fieldError('soldBy')}
           </div>
 
-          {/* Duration spans the row on its own; the two dates then pair up
-              underneath it, which reads in the order they are filled in. */}
-          <div className="sm:col-span-2">
+          {/* Duration pairs with Max screens, or spans the row on its own where
+              that is hidden; the two dates then pair up underneath it, which
+              reads in the order they are filled in. */}
+          <div className={showMaxScreens ? '' : 'sm:col-span-2'}>
             <label className="label" htmlFor="duration">
               License Duration <span className="text-red-500">*</span>
             </label>
@@ -436,6 +519,31 @@ export default function LicenseFormModal({
               ))}
             </select>
           </div>
+
+          {showMaxScreens && (
+            <div>
+              <label className="label" htmlFor="maxScreens">
+                Max screens <span className="text-red-500">*</span>
+              </label>
+              <input
+                id="maxScreens"
+                type="number"
+                inputMode="numeric"
+                min="1"
+                max={MAX_SCREENS_LIMIT}
+                step="1"
+                className={`input ${errors.maxScreens ? 'border-red-400' : ''}`}
+                value={values.maxScreens}
+                onChange={(e) => setField('maxScreens', e.target.value)}
+                aria-describedby="maxScreensHelp"
+              />
+              {fieldError('maxScreens') || (
+                <p id="maxScreensHelp" className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  How many machines can use this key
+                </p>
+              )}
+            </div>
+          )}
 
           <div>
             <label className="label" htmlFor="startDate">
@@ -483,6 +591,34 @@ export default function LicenseFormModal({
           onClose={() => setSharing(false)}
         />
       )}
+
+      <ConfirmDialog
+        open={Boolean(releaseTarget)}
+        busy={releasing}
+        title="Release this machine?"
+        message={
+          releaseTarget
+            ? `${releaseTarget.machineNumber} will stop using this license key, and its slot becomes free for another machine. If it checks in again, it is accepted only while a slot is free.`
+            : ''
+        }
+        confirmLabel="Release"
+        onConfirm={confirmRelease}
+        onCancel={() => setReleaseTarget(null)}
+      />
+
+      <ConfirmDialog
+        open={Boolean(resetTarget)}
+        busy={resetting}
+        title="Reset this POC's password?"
+        message={
+          resetTarget
+            ? `${resetTarget.username}'s current password stops working on all their products straight away. A new one is generated and shown once.`
+            : ''
+        }
+        confirmLabel="Reset password"
+        onConfirm={confirmReset}
+        onCancel={() => setResetTarget(null)}
+      />
     </Modal>
   )
 }
